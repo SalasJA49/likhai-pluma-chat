@@ -214,13 +214,25 @@ class ChatStartAPI(APIView):
 # backend/api/views.py
 class ChatHistoryAPI(APIView):
     def get(self, request):
-        thread_id = request.query_params.get("thread_id")
-        th = get_object_or_404(ChatThread, id=thread_id)
+        # Support either `thread_id` or `thread` query param. If missing/invalid, return empty history
+        tid = request.query_params.get("thread_id") or request.query_params.get("thread")
+        try:
+            if not tid:
+                return Response({"thread_id": None, "messages": []})
+            thread_id = int(tid)
+        except Exception:
+            return Response({"thread_id": None, "messages": []})
+
+        try:
+            th = get_object_or_404(ChatThread, id=thread_id)
+        except Exception:
+            return Response({"thread_id": None, "messages": []})
+
         msgs = [
             {
                 "role": m.role,
                 "content": m.content,
-                "created_at": m.created_at.isoformat(),  # ← serialize
+                "created_at": m.created_at.isoformat(),
             }
             for m in th.messages.order_by("created_at")
         ]
