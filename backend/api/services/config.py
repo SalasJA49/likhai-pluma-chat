@@ -6,9 +6,9 @@ from django.conf import settings
 
 load_dotenv()
 
-# manage.py sits in backend/, so repo root is one level up
-REPO_ROOT = settings.BASE_DIR.parent
-LOCAL_DATA_PATH = REPO_ROOT / "data" / "local_data.json"
+# manage.py sits in backend/ and settings.BASE_DIR points to the backend root (/app)
+# so the project's data folder is under settings.BASE_DIR / 'data'
+LOCAL_DATA_PATH = Path(settings.BASE_DIR) / "data" / "local_data.json"
 
 def load_locals():
     try:

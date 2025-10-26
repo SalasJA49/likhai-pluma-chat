@@ -39,3 +39,4 @@ djangorestframework
 django-cors-headers
 python-dotenv
 psycopg2-binary
+dj-database-url==1.0.0
