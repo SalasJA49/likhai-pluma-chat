@@ -63,34 +63,6 @@ def header_auth_callback(headers: Dict) -> Optional[cl.User]:
         return None
 
 
-# @cl.set_chat_profiles
-# async def chat_profile():
-#     """
-#     Set up available chat profiles based on configured LLM models.
-    
-#     Creates chat profiles from the model configurations, allowing users
-#     to select different language models for their conversations.
-    
-#     Returns:
-#         List[cl.ChatProfile]: List of available chat profiles
-#     """
-#     llm_models = get_llm_models()
-#     # get a list of model names from llm_models
-#     model_list = [f"{model["model_deployment"]}--{model["description"]}" for model in llm_models]
-#     profiles = []
-
-#     for item in model_list:
-#         model_deployment, description = item.split("--")
-
-#         # Create a profile for each model
-#         profiles.append(
-#             cl.ChatProfile(
-#                 name=model_deployment,
-#                 markdown_description=description
-#             )
-#         )
-
-#     return profiles
 
 @cl.set_chat_profiles
 async def chat_profile():
