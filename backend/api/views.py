@@ -1,5 +1,6 @@
 from .repositories.factory import get_repo
 from .services.prompts import extract_style as llm_extract_style, rewrite_content as llm_rewrite
+from .services.config import LLM_LOCALS
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -11,7 +12,7 @@ from pptx import Presentation
 
 # For chatbot
 from django.shortcuts import get_object_or_404
-from .models import ChatThread, ChatMessage
+from .models import ChatThread, ChatMessage, Attachment
 from .services.chat_llm import run_chat
 
 # For chat stream
@@ -28,6 +29,26 @@ from queue import Queue, Empty
 import time
 import json, os
 from .services.foundry_stream import stream_foundry_chat
+from .services.foundry_stream import resolve_foundry
+from .models import ChatFoundryThread
+
+# Azure Foundry client libs
+from azure.identity import DefaultAzureCredential
+from azure.ai.agents import AgentsClient
+from azure.ai.agents.models import (
+    MessageAttachment,
+    MessageInputTextBlock,
+    MessageInputContentBlock,
+    MessageImageFileParam,
+    MessageInputImageFileBlock,
+    FilePurpose,
+    CodeInterpreterTool,
+    AgentStreamEvent,
+    MessageDeltaChunk,
+    ThreadRun,
+)
+import tempfile
+from pathlib import Path
 
 repo = get_repo()
 
@@ -110,6 +131,17 @@ class StyleDetailAPI(APIView):
 class OutputsAPI(APIView):
     def get(self, _):
         return Response(repo.list_outputs())
+
+
+class LocalsAPI(APIView):
+    """Return the local_data.json contents used for prompts (LLM_LOCALS)
+    GET /api/locals/
+    """
+    def get(self, request):
+        # Only return specific safe keys for the frontend
+        allowed = ["relevant_guidelines", "guideline_summaries"]
+        out = {k: LLM_LOCALS.get(k, {}) for k in allowed}
+        return Response(out)
 
 
 class OutputDownloadAPI(APIView):
@@ -236,6 +268,17 @@ class ChatHistoryAPI(APIView):
                 "role": m.role,
                 "content": m.content,
                 "created_at": m.created_at.isoformat(),
+                "attachments": [
+                    {
+                        "id": a.id,
+                        "filename": a.filename,
+                        "content_type": a.content_type,
+                        "blob_url": a.blob_url,
+                        "foundry_file_id": a.foundry_file_id,
+                        "created_at": a.created_at.isoformat(),
+                    }
+                    for a in m.attachments.order_by("created_at").all()
+                ],
             }
             for m in th.messages.order_by("created_at")
         ]
@@ -286,6 +329,246 @@ class ChatMessageAPI(APIView):
         ChatMessage.objects.create(thread=th, role="assistant", content=assistant_text or "")
 
         return Response({"output": assistant_text})
+
+
+class ChatUploadAPI(APIView):
+    """
+    POST /api/chat/upload/
+    Accepts multipart/form-data files[] and returns extracted text.
+    Body: files[]
+    Response: { text: str }
+    """
+    def post(self, request):
+        files = request.FILES.getlist("files")
+        if not files:
+            return Response({"text": ""})
+        try:
+            text = extract_text_from_files(files)
+            return Response({"text": text})
+        except Exception:
+            return Response({"text": ""}, status=500)
+
+
+class ChatUploadFoundryAPI(APIView):
+    """
+    POST /api/chat/upload-foundry/
+    Accepts multipart/form-data files[], thread_id, optional content, model_deployment and mode.
+    Uploads files to Azure Foundry, creates a Foundry message with attachments and streams the run as SSE.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        # For multipart requests, use POST dict
+        data = request.POST if request.content_type.startswith("multipart/") else request.data
+        thread_id = data.get("thread_id") or data.get("thread")
+        user_text = (data.get("content") or "").strip()
+        deployment = data.get("model_deployment") or data.get("deployment") or data.get("model")
+        mode = (data.get("mode") or "work").lower()
+
+        files = request.FILES.getlist("files")
+
+        if not thread_id:
+            return Response({"detail": "thread_id required"}, status=400)
+        if not deployment:
+            return Response({"detail": "model_deployment required"}, status=400)
+
+        # resolve foundry endpoint and agent id
+        try:
+            resolved = resolve_foundry(model_deployment=deployment, mode=mode)
+            endpoint = resolved["endpoint"]
+            agent_id = resolved["model_id"]
+        except Exception as e:
+            return Response({"detail": f"foundry resolve failed: {e}"}, status=500)
+
+        # prepare credential and client
+        cred = DefaultAzureCredential(exclude_shared_token_cache_credential=True)
+        client = AgentsClient(endpoint=endpoint, credential=cred)
+
+        # ensure mapping from ChatThread -> foundry thread
+        try:
+            th = get_object_or_404(ChatThread, id=int(thread_id))
+        except Exception:
+            return Response({"detail": "thread not found"}, status=404)
+
+        f_thread_id = None
+        try:
+            mapping = ChatFoundryThread.objects.filter(thread=th).first()
+            if mapping and mapping.foundry_thread_id:
+                f_thread_id = mapping.foundry_thread_id
+        except Exception:
+            mapping = None
+
+        if not f_thread_id:
+            t = client.threads.create()
+            f_thread_id = t.id
+            try:
+                ChatFoundryThread.objects.update_or_create(thread=th, defaults={"foundry_thread_id": f_thread_id})
+            except Exception:
+                pass
+
+        # helper to emit SSE frames
+        def sse_event(name: str, data_str: str):
+            yield f"event: {name}\n"
+            for line in data_str.splitlines() or [""]:
+                yield f"data: {line}\n"
+            yield "\n"
+
+        def gen():
+            yield from sse_event("ready", "{}")
+
+            # persist user message early so history reflects it (include attachment markers)
+            user_msg = None
+            try:
+                if user_text or files:
+                    marker_text = ""
+                    try:
+                        names = [f.name for f in files]
+                        if names:
+                            marker_text = "\n\n" + "\n".join([f"<file_name:{n}>" for n in names])
+                    except Exception:
+                        marker_text = ""
+                    user_msg = ChatMessage.objects.create(thread=th, role="user", content=(user_text or "") + marker_text)
+            except Exception:
+                user_msg = None
+
+            # upload files and prepare attachments/content blocks
+            content_blocks = [MessageInputTextBlock(text=user_text)]
+            attachments = []
+            tmp_paths = []
+            try:
+                for f in files:
+                    # write to a temp file
+                    suffix = Path(f.name).suffix or ""
+                    tf = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+                    tf.write(f.read())
+                    tf.flush()
+                    tf.close()
+                    tmp_paths.append(tf.name)
+
+                    uploaded = client.files.upload_and_poll(file_path=tf.name, purpose=FilePurpose.AGENTS)
+                    attachments.append(MessageAttachment(file_id=uploaded.id, tools=CodeInterpreterTool().definitions))
+
+                    # Also upload to blob storage (if configured) and persist an Attachment record
+                    try:
+                        from azure.storage.blob import BlobServiceClient
+                        conn = os.getenv("APP_AZURE_STORAGE_CONNECTION_STRING") or os.getenv("APP_AZURE_STORAGE_CONNECTION")
+                        blob_url = ""
+                        if conn:
+                            bsc = BlobServiceClient.from_connection_string(conn)
+                            container = os.getenv("BUCKET_NAME") or os.getenv("AZURE_STORAGE_CONTAINER") or "chats"
+                            blob_name = f"{int(time.time()*1000)}_{Path(tf.name).name}"
+                            blob_client = bsc.get_blob_client(container=container, blob=blob_name)
+                            with open(tf.name, "rb") as fh:
+                                blob_client.upload_blob(fh, overwrite=True)
+                            # Try to compute a public URL using DEV_AZURE_BLOB_ENDPOINT if provided
+                            dev_endpoint = os.getenv("DEV_AZURE_BLOB_ENDPOINT")
+                            if dev_endpoint:
+                                blob_url = f"{dev_endpoint.rstrip('/')}" + f"/{container}/{blob_name}"
+                            else:
+                                try:
+                                    blob_url = blob_client.url
+                                except Exception:
+                                    blob_url = ""
+                        else:
+                            blob_url = ""
+
+                        # Create Attachment record linked to the persisted user message (if present)
+                        if user_msg:
+                            Attachment.objects.create(
+                                message=user_msg,
+                                filename=f.name,
+                                content_type=(f.content_type or ""),
+                                blob_url=blob_url or "",
+                                foundry_file_id=(getattr(uploaded, "id", "") or ""),
+                            )
+                    except Exception:
+                        # don't fail the stream if blob upload/attachment save fails
+                        pass
+
+                    # if image, add image content block
+                    if (f.content_type or "").startswith("image/"):
+                        file_param = MessageImageFileParam(file_id=uploaded.id, detail="high")
+                        content_blocks.append(MessageInputImageFileBlock(image_file=file_param))
+            except Exception as e:
+                # cleanup tmp files
+                for p in tmp_paths:
+                    try:
+                        Path(p).unlink()
+                    except Exception:
+                        pass
+                yield from sse_event("error", json.dumps({"detail": str(e)}))
+                yield from sse_event("done", "{}")
+                return
+
+            # create the message in foundry thread
+            try:
+                client.messages.create(thread_id=f_thread_id, role="user", content=content_blocks, attachments=attachments)
+            except Exception as e:
+                yield from sse_event("error", json.dumps({"detail": str(e)}))
+                yield from sse_event("done", "{}")
+                return
+
+            # stream run
+            tokens: list[str] = []
+            try:
+                with client.runs.stream(thread_id=f_thread_id, agent_id=agent_id) as stream:
+                    for event_type, event_data, _ in stream:
+                        if isinstance(event_data, MessageDeltaChunk):
+                            token = event_data.text or ""
+                            if token:
+                                tokens.append(token)
+                                yield from sse_event("token", token)
+                        elif isinstance(event_data, ThreadRun):
+                            if event_data.status == "failed":
+                                raise RuntimeError(str(event_data.last_error))
+                        elif event_type == AgentStreamEvent.ERROR:
+                            raise RuntimeError(str(event_data))
+
+                # merge tokens into assistant text
+                def _merge_tokens(ts: list[str]) -> str:
+                    if not ts:
+                        return ""
+                    out = ts[0]
+                    for t in ts[1:]:
+                        if out and out[-1].isalnum() and t and t[0].isalnum():
+                            out += " " + t
+                        else:
+                            out += t
+                    return out
+
+                assistant_text = _merge_tokens(tokens)
+                try:
+                    ChatMessage.objects.create(thread=th, role="assistant", content=assistant_text)
+                except Exception:
+                    pass
+
+                # update thread title if needed
+                try:
+                    cur_title = (th.title or "").strip()
+                    if not cur_title or cur_title.lower().startswith("new") or cur_title.lower().startswith("chat"):
+                        new_title = _derive_title_from_text(assistant_text) or cur_title
+                        if new_title and new_title != cur_title:
+                            th.title = new_title
+                            th.save()
+                except Exception:
+                    pass
+
+                yield from sse_event("done", json.dumps({"ok": True}))
+            except Exception as e:
+                yield from sse_event("error", json.dumps({"detail": str(e)}))
+                yield from sse_event("done", "{}")
+            finally:
+                # cleanup tmp files
+                for p in tmp_paths:
+                    try:
+                        Path(p).unlink()
+                    except Exception:
+                        pass
+
+        resp = StreamingHttpResponse(gen(), content_type="text/event-stream; charset=utf-8")
+        resp["Cache-Control"] = "no-cache"
+        resp["X-Accel-Buffering"] = "no"
+        return resp
 
 class ChatModelsAPI(APIView):
     """
@@ -363,6 +646,14 @@ class ChatStreamAPI(APIView):
                 yield f"data: {line}\n"
             yield "\n"
 
+        # try to resolve thread object early so we can persist the user's message
+        th_obj = None
+        if thread_id:
+            try:
+                th_obj = get_object_or_404(ChatThread, id=int(thread_id))
+            except Exception:
+                th_obj = None
+
         def gen():
             # tell client we’re ready
             yield from sse_event("ready", "{}")
@@ -376,7 +667,14 @@ class ChatStreamAPI(APIView):
 
                 try:
                     # stream_foundry_chat yields token strings (not SSE frames)
-                    th = get_object_or_404(ChatThread, id=thread_id)
+                    # ensure we have the thread and persist the user's message
+                    th = th_obj or get_object_or_404(ChatThread, id=int(thread_id))
+                    try:
+                        if user_text:
+                            ChatMessage.objects.create(thread=th, role="user", content=user_text)
+                    except Exception:
+                        # non-fatal: continue streaming even if save fails
+                        pass
                     tokens = []
                     for token in stream_foundry_chat(thread_db_id=int(thread_id), user_text=user_text, model_deployment=deployment or "", mode=mode):
                         # each token is a string chunk
@@ -426,6 +724,16 @@ class ChatStreamAPI(APIView):
                 yield from sse_event("token", "Hello! 👋")
                 yield from sse_event("done", "{}")
                 return
+
+            # For non-foundry fallback streaming, persist the user's message if we have a thread
+            try:
+                if th_obj and user_text:
+                    try:
+                        ChatMessage.objects.create(thread=th_obj, role="user", content=user_text)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
             for word in (user_text.split() or []):
                 yield from sse_event("token", word + " ")

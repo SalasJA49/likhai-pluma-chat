@@ -1,10 +1,12 @@
 // frontend/src/pages/Writer.tsx
 import { useEffect, useState, type DragEvent, type ChangeEvent } from "react";
-import { fetchStyles, rewrite } from "../lib/api";
+import { fetchStyles, fetchLocals, rewrite } from "../lib/api";
 
 export default function Writer() {
   const [content, setContent] = useState("");
   const [styles, setStyles] = useState<any[]>([]);
+  const [locals, setLocals] = useState<any>(null);
+  const [extraChecks, setExtraChecks] = useState<Record<string, boolean>>({});
   const [sel, setSel] = useState<any | null>(null);
 
   const [files, setFiles] = useState<File[]>([]);
@@ -17,6 +19,16 @@ export default function Writer() {
 
   useEffect(() => {
     fetchStyles().then(setStyles);
+    fetchLocals()
+      .then((d) => {
+        setLocals(d);
+        // initialize checkboxes for all keys present in locals.relevant_guidelines
+        const rg = (d && d.relevant_guidelines) || {};
+        const map: Record<string, boolean> = {};
+        Object.keys(rg).forEach((k) => (map[k] = false));
+        setExtraChecks(map);
+      })
+      .catch(() => {});
     const onStylesChanged = async () => { try{ setStyles(await fetchStyles()); }catch(e){} };
     window.addEventListener('styles:changed', onStylesChanged as EventListener);
     return ()=> window.removeEventListener('styles:changed', onStylesChanged as EventListener);
@@ -75,12 +87,24 @@ export default function Writer() {
     setLoading(true);
     setOut("");
     try {
-      const guideline = `Limit the output to approximately ${maxChars} characters. If needed, be concise while preserving key points.`;
+      // base guideline
+      const baseGuideline = `Limit the output to approximately ${maxChars} characters. If needed, be concise while preserving key points.`;
+      // append any selected extra guideline texts from locals.relevant_guidelines
+      let extraTexts: string[] = [];
+      try{
+        const rg = (locals && locals.relevant_guidelines) || {};
+        for (const [k, v] of Object.entries(extraChecks || {})) {
+          if (v && rg[k]) extraTexts.push(String(rg[k]));
+        }
+      }catch(e){}
+
+      const finalGuidelines = [baseGuideline].concat(extraTexts).join('\n\n');
+
       const res = await rewrite({
         content,
         style: sel?.style || "",
         example: sel?.example || "",
-        guidelines: guideline,
+        guidelines: finalGuidelines,
         styleId: sel?.name || "Style",
       });
       setOut(res.output);
@@ -239,6 +263,34 @@ export default function Writer() {
               </option>
             ))}
           </select>
+
+          {/* Additional stylistic checkboxes loaded from locals */}
+          {locals && locals.relevant_guidelines && (
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-slate-600 mb-2">Additional options</label>
+              <div className="grid grid-cols-2 gap-2">
+                {Object.keys(locals.relevant_guidelines || {}).map((k) => (
+                  <label
+                    key={k}
+                    className="flex items-center text-sm"
+                    title={
+                      (locals.guideline_summaries && locals.guideline_summaries[k]) || undefined
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!extraChecks?.[k]}
+                      onChange={(e) =>
+                        setExtraChecks((prev) => ({ ...prev, [k]: e.target.checked }))
+                      }
+                      className="mr-2"
+                    />
+                    <span className="truncate">{k}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Row 4: Button (full width under selector, spans 8) */}

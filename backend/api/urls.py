@@ -3,6 +3,8 @@ from .views import (
     StylesAPI, StyleDetailAPI, ExtractStyleAPI, RewriteAPI, OutputsAPI,
     OutputDownloadAPI,
     ChatStartAPI, ChatMessageAPI, ChatHistoryAPI, ChatStreamAPI,
+    ChatUploadAPI, ChatUploadFoundryAPI,
+    LocalsAPI,
     ChatModelsAPI, ChatThreadsAPI, ChatRenameAPI, ResearchStreamAPI   # <-- add
 )
 
@@ -15,6 +17,9 @@ urlpatterns = [
     path("outputs/<str:output_id>/download/", OutputDownloadAPI.as_view()),
     path("chat/start/", ChatStartAPI.as_view()),
     path("chat/message/", ChatMessageAPI.as_view()),
+    path("chat/upload/", ChatUploadAPI.as_view()),
+    path("chat/upload-foundry/", ChatUploadFoundryAPI.as_view()),
+    path("locals/", LocalsAPI.as_view()),
     path("chat/history/", ChatHistoryAPI.as_view()),
     path("chat/threads/", ChatThreadsAPI.as_view()),
     path("chat/rename/", ChatRenameAPI.as_view()),

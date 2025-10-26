@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { startThread, getHistory, streamChat } from "../lib/api";
+import { startThread, getHistory, streamChat, uploadChatFiles, uploadChatFilesFoundry } from "../lib/api";
 
-type Msg = { role: "user" | "assistant"; content: string };
+type Attachment = { id: number; filename: string; blob_url: string; content_type: string };
+type Msg = { role: "user" | "assistant"; content: string; attachments?: Attachment[] };
 
 // If you want these from env later, you can fetch them from an endpoint.
 // For now, keep simple + explicit.
@@ -15,13 +16,15 @@ export default function Chat() {
   const [threadId, setThreadId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // UI controls
   const [model, setModel] = useState<string>(MODEL_OPTIONS[0].value);
   const [mode, setMode] = useState<"work" | "web">("work");
-  const [deployment, setDeployment] = useState<string>("foundry/gpt-4.1-mini");
+  const [deployment] = useState<string>("foundry/gpt-4.1-mini");
   const scrollRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
   const [isStreaming, setIsStreaming] = useState(false);
@@ -46,10 +49,12 @@ export default function Chat() {
         setThreadId(thread_id);
         const hist = await getHistory(thread_id);
         setMessages(
-          (hist.messages || [])
-            .filter((m) => m.role === "user" || m.role === "assistant")
-            .map((m) => ({ role: m.role as Msg["role"], content: m.content }))
+          ((hist.messages || []) as any)
+            .filter((m: any) => m.role === "user" || m.role === "assistant")
+            .map((m: any) => ({ role: m.role as Msg["role"], content: m.content, attachments: m.attachments || [] }))
         );
+        // signal threads loading finished (if sidebar triggered a loading state)
+        try{ window.dispatchEvent(new CustomEvent('thread:loading:done', { detail: thread_id })); }catch(e){}
       } catch (e: any) {
         console.error("Failed to start thread:", e);
         setError("Failed to create chat session — check backend (see console)");
@@ -69,10 +74,11 @@ export default function Chat() {
             setThreadId(tid);
             const hist = await getHistory(tid);
             setMessages(
-              (hist.messages || [])
-                .filter((m) => m.role === "user" || m.role === "assistant")
-                .map((m) => ({ role: m.role as Msg["role"], content: m.content }))
+              ((hist.messages || []) as any)
+                .filter((m: any) => m.role === "user" || m.role === "assistant")
+                .map((m: any) => ({ role: m.role as Msg["role"], content: m.content, attachments: m.attachments || [] }))
             );
+            try{ window.dispatchEvent(new CustomEvent('thread:loading:done', { detail: tid })); }catch(e){}
           }
         }
       } catch (e) {
@@ -87,19 +93,126 @@ export default function Chat() {
   }, [messages]);
 
   const send = async () => {
-    if (!threadId || !input.trim() || sending) return;
+    if (!threadId || sending) return;
 
-    const userText = input.trim();
-    setInput("");
     setSending(true);
+    let finalUserText = (input || "").trim();
+      if ((!finalUserText || finalUserText.length === 0) && attachments.length === 0) {
+        // nothing to send
+        setSending(false);
+        return;
+      }
+
+      if (attachments && attachments.length > 0) {
+        try {
+          // If using Foundry provider, directly upload files to Foundry and stream the run.
+          const isFoundry = (deployment || "").toLowerCase().startsWith("foundry/");
+          if (isFoundry) {
+            const fd = new FormData();
+            fd.append("thread_id", String(threadId));
+            fd.append("model_deployment", deployment);
+            fd.append("mode", mode);
+            if (finalUserText) fd.append("content", finalUserText);
+            for (const f of attachments) fd.append("files", f);
+
+            // Use FormData-based SSE helper
+            const sse = uploadChatFilesFoundry(fd);
+            // Optimistic UI: we already appended a user+assistant placeholder below; we'll stream tokens into the assistant placeholder
+            sse.on(
+              async (ev) => {
+                const type = ev.type || "message";
+                if (type === "ready") {
+                  setIsStreaming(true);
+                  return;
+                }
+                if (type === "token") {
+                  const chunk = String(ev.data || "");
+                  setMessages((prev) => {
+                    const clone = prev.slice();
+                    const last = clone[clone.length - 1];
+                    if (last?.role === "assistant") {
+                      const prevText = last.content || "";
+                      const prevEndsAlnum = /[A-Za-z0-9]$/.test(prevText);
+                      const chunkStartsAlnum = /^[A-Za-z0-9]/.test(chunk);
+                      if (prevEndsAlnum && chunkStartsAlnum) {
+                        last.content += " " + chunk;
+                      } else {
+                        last.content += chunk;
+                      }
+                    }
+                    return clone;
+                  });
+                } else if (type === "error") {
+                  try {
+                    const parsed = JSON.parse(String(ev.data || "{}"));
+                    setMessages((prev) => {
+                      const clone = prev.slice();
+                      const last = clone[clone.length - 1];
+                      if (last?.role === "assistant" && !last.content) last.content = `⚠️ ${parsed?.detail || "stream error"}`;
+                      return clone;
+                    });
+                  } catch {
+                    // ignore
+                  }
+                } else if (type === "done") {
+                  setIsStreaming(false);
+                  try { window.dispatchEvent(new CustomEvent('threads:changed')); } catch(e){}
+                  try {
+                    if (threadId) {
+                      const hist = await getHistory(threadId);
+                      setMessages(
+                        (hist.messages || [])
+                          .filter((m) => m.role === "user" || m.role === "assistant")
+                          .map((m) => ({ role: m.role as Msg["role"], content: m.content }))
+                      );
+                    }
+                  } catch (e) {}
+                }
+              },
+              (e) => {
+                console.error("SSE failed:", e);
+                setIsStreaming(false);
+                setMessages((prev) => {
+                  const clone = prev.slice();
+                  const last = clone[clone.length - 1];
+                  if (last?.role === "assistant" && !last.content) {
+                    last.content = "⚠️ Sorry, something went wrong.";
+                  }
+                  return clone;
+                });
+              }
+            );
+
+            // clear attachments handled in finally
+            setSending(false);
+            setAttachments([]);
+            if (fileRef.current) fileRef.current.value = "";
+            return; // we've handled streaming via Foundry upload — exit send()
+          }
+
+          // Fallback: non-Foundry, server will extract text and return it
+          const fd = new FormData();
+          for (const f of attachments) fd.append("files", f);
+          const res = await uploadChatFiles(fd);
+          if (res && res.text) {
+            finalUserText = (finalUserText ? finalUserText + "\n\n" : "") + res.text;
+          }
+        } catch (e) {
+          // if upload/extract fails, still proceed with whatever text we have
+        }
+      }
+
+    
+    // clear input immediately for UX
+    setInput("");
 
     // Optimistic UI
-    setMessages((prev) => [...prev, { role: "user", content: userText }, { role: "assistant", content: "" }]);
+    setMessages((prev) => [...prev, { role: "user", content: finalUserText }, { role: "assistant", content: "" }]);
 
     try {
       const sse = streamChat({
         thread_id: threadId,
-        content: userText,
+        content: finalUserText,
         // always Foundry:
         provider: "foundry",
         mode,               // "work" or "web"
@@ -107,7 +220,7 @@ export default function Chat() {
       } as any);
 
       sse.on(
-        (ev) => {
+        async (ev) => {
           const type = ev.type || "message";
 
           if (type === "ready") {
@@ -148,10 +261,24 @@ export default function Chat() {
           } else if (type === "done") {
             setIsStreaming(false);
             try { window.dispatchEvent(new CustomEvent('threads:changed')); } catch(e) {}
+            // Ensure we refresh canonical history from the server so persisted user messages
+            // saved by the streaming endpoint are reflected in the UI.
+            try {
+              if (threadId) {
+                const hist = await getHistory(threadId);
+                setMessages(
+                  (hist.messages || [])
+                    .filter((m) => m.role === "user" || m.role === "assistant")
+                    .map((m) => ({ role: m.role as Msg["role"], content: m.content }))
+                );
+              }
+            } catch (e) {
+              // ignore refresh errors
+            }
           }
           // ignore "ready", "keepalive" in the UI; "done" triggers threads refresh
         },
-        (e) => {
+  (e) => {
           console.error("SSE failed:", e);
           setIsStreaming(false);
           setMessages((prev) => {
@@ -166,7 +293,16 @@ export default function Chat() {
       );
     } finally {
       setSending(false);
+      // clear attachments after attempt
+      setAttachments([]);
+      if (fileRef.current) fileRef.current.value = "";
     }
+  };
+
+  const onSelectFiles = (files: FileList | null) => {
+    if (!files) return;
+    const arr = Array.from(files);
+    setAttachments(arr);
   };
 
   return (
@@ -250,7 +386,22 @@ export default function Chat() {
                     : "bg-white border border-slate-200 text-slate-800"
                 }`}
               >
-                {m.content || (m.role === "assistant" ? "…" : "")}
+                <div>{m.content || (m.role === "assistant" ? "…" : "")}</div>
+                {m.attachments && m.attachments.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {m.attachments.map((a) => (
+                      <div key={a.id} className="text-xs text-slate-500">
+                        {a.blob_url ? (
+                          <a href={a.blob_url} target="_blank" rel="noreferrer" className="underline">
+                            {a.filename}
+                          </a>
+                        ) : (
+                          <span>{a.filename}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -272,11 +423,20 @@ export default function Chat() {
           />
           <button
             onClick={send}
-            disabled={!threadId || !input.trim() || sending}
+            disabled={!threadId || (!input.trim() && attachments.length === 0) || sending}
             className="h-[44px] min-w-[80px] rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {sending ? "Sending…" : "Send"}
           </button>
+        </div>
+        {/* Attachment area below composer */}
+        <div className="mt-2 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <input ref={fileRef} type="file" className="hidden" onChange={(e)=>onSelectFiles(e.target.files)} multiple />
+            <button onClick={()=>fileRef.current?.click()} className="text-sm text-slate-600 hover:underline">Attach files</button>
+            <div className="text-xs text-slate-400">{attachments.length>0 ? attachments.map(a=>a.name).join(', ') : ''}</div>
+          </div>
+          <div className="text-xs text-slate-400">You can attach .pdf, .docx, images</div>
         </div>
       </div>
     </div>

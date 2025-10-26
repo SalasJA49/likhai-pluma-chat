@@ -345,6 +345,10 @@ def show_style_writer():
 
     st.session_state.guidelines = "\n".join(selected_guidelines)
 
+    # Note: Additional stylistic options are handled in the JS/React Writer UI.
+    # The Streamlit prototype previously exposed quick checkboxes here; to avoid
+    # duplicating behavior we keep that logic on the web frontend only.
+
     # Rewrite button
     disabled = (content_all == "" or st.session_state.style == "" or st.session_state.example == "")
     if st.button(":blue[**Rewrite Content**]", key="extract", disabled=disabled):

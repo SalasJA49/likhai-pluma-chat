@@ -31,3 +31,16 @@ class ChatFoundryThread(models.Model):
     thread = models.OneToOneField(ChatThread, on_delete=models.CASCADE, related_name="foundry")
     foundry_thread_id = models.CharField(max_length=200, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class Attachment(models.Model):
+    """File attachment stored in blob storage and optionally referenced in Foundry."""
+    message = models.ForeignKey(ChatMessage, on_delete=models.CASCADE, related_name="attachments")
+    filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120, blank=True, default="")
+    blob_url = models.TextField(blank=True, default="")
+    foundry_file_id = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"Attachment({self.filename})"
