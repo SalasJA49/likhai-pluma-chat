@@ -12,6 +12,7 @@ export default function Writer() {
 
   const [maxChars, setMaxChars] = useState<number>(800);
   const [out, setOut] = useState("");
+  const [outId, setOutId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -83,8 +84,27 @@ export default function Writer() {
         styleId: sel?.name || "Style",
       });
       setOut(res.output);
+      setOutId(res.output_id || null);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const doExport = async (fmt: "pdf" | "docx") => {
+    if (!outId) return alert('No output to export yet.');
+    try {
+      const blob = await (await import("../lib/api")).exportOutput(outId, fmt);
+      const url = window.URL.createObjectURL(new Blob([blob]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `output_${outId}.${fmt}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e:any) {
+      console.error(e);
+      alert('Export failed');
     }
   };
 
@@ -240,6 +260,10 @@ export default function Writer() {
             Rewritten Output
           </h2>
           <pre className="whitespace-pre-wrap text-sm text-slate-800">{out}</pre>
+          <div className="mt-4 flex gap-3">
+            <button onClick={()=>doExport('docx')} className="px-4 py-2 rounded bg-slate-700 text-white text-sm">Save as .docx</button>
+            <button onClick={()=>doExport('pdf')} className="px-4 py-2 rounded bg-slate-700 text-white text-sm">Save as .pdf</button>
+          </div>
         </div>
       )}
     </div>

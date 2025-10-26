@@ -111,6 +111,63 @@ class OutputsAPI(APIView):
     def get(self, _):
         return Response(repo.list_outputs())
 
+
+class OutputDownloadAPI(APIView):
+    """Download a saved output as PDF or DOCX.
+    GET /api/outputs/<output_id>/download/?format=pdf|docx
+    """
+    def get(self, request, output_id: str):
+        fmt = (request.query_params.get("format") or "pdf").lower()
+        if fmt not in ("pdf", "docx"):
+            return Response({"detail": "format must be 'pdf' or 'docx'"}, status=400)
+
+        data = repo.get_output(str(output_id))
+        if not data:
+            return Response({"detail": "output not found"}, status=404)
+
+        text = (data.get("output") or "")
+        from io import BytesIO
+        if fmt == "docx":
+            from docx import Document
+            buf = BytesIO()
+            doc = Document()
+            # preserve paragraphs
+            for line in text.splitlines():
+                doc.add_paragraph(line)
+            doc.save(buf)
+            buf.seek(0)
+            resp = Response(buf.read(), status=200, content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            resp["Content-Disposition"] = f"attachment; filename=output_{output_id}.docx"
+            return resp
+
+        # PDF
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        buf = BytesIO()
+        c = canvas.Canvas(buf, pagesize=letter)
+        width, height = letter
+        margin = 50
+        y = height - margin
+        line_height = 12
+        for paragraph in text.split("\n\n"):
+            for line in paragraph.splitlines():
+                # simple wrap at ~90 chars
+                import textwrap
+                wrapped = textwrap.wrap(line, width=90) or [""]
+                for wl in wrapped:
+                    if y < margin + line_height:
+                        c.showPage()
+                        y = height - margin
+                    c.setFont("Helvetica", 10)
+                    c.drawString(margin, y, wl)
+                    y -= line_height
+            y -= line_height  # paragraph gap
+        c.save()
+        buf.seek(0)
+        resp = Response(buf.read(), status=200, content_type="application/pdf")
+        resp["Content-Disposition"] = f"attachment; filename=output_{output_id}.pdf"
+        return resp
+
 class RewriteAPI(APIView):
     def post(self, request):
         content = request.data.get("content","")

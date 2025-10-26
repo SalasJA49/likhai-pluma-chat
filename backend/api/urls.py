@@ -11,6 +11,7 @@ urlpatterns = [
     path("extract-style/", ExtractStyleAPI.as_view()),
     path("rewrite/", RewriteAPI.as_view()),
     path("outputs/", OutputsAPI.as_view()),
+    path("outputs/<str:output_id>/download/", OutputDownloadAPI.as_view()),
     path("chat/start/", ChatStartAPI.as_view()),
     path("chat/message/", ChatMessageAPI.as_view()),
     path("chat/history/", ChatHistoryAPI.as_view()),

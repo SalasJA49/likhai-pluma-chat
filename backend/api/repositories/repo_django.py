@@ -23,3 +23,16 @@ class DjangoRepo(DataRepo):
     def save_output(self, style_name: str, input_text: str, output_text: str) -> Dict[str, Any]:
         rec = Output.objects.create(style_name=style_name, input_text=input_text, output_text=output_text)
         return {"id": rec.id, "style_name": rec.style_name}
+
+    def get_output(self, output_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            r = Output.objects.get(id=output_id)
+            return {
+                "id": r.id,
+                "style_name": r.style_name,
+                "input": r.input_text,
+                "output": r.output_text,
+                "created_at": r.created_at,
+            }
+        except Output.DoesNotExist:
+            return None

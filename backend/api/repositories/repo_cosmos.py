@@ -102,3 +102,20 @@ class CosmosRepo(DataRepo):
         }
         self.outputs.create_item(body=doc)
         return {"id": doc["id"], "style_name": style_name}
+
+    def get_output(self, output_id: str) -> Optional[Dict[str, Any]]:
+        items = list(self.outputs.query_items(
+            query="SELECT * FROM c WHERE c.id = @id",
+            parameters=[{"name": "@id", "value": output_id}],
+            enable_cross_partition_query=True
+        ))
+        if not items:
+            return None
+        it = items[0]
+        return {
+            "id": it.get("id"),
+            "style_name": it.get("styleId") or it.get("style_name"),
+            "input": it.get("content"),
+            "output": it.get("output"),
+            "created_at": it.get("updatedAt"),
+        }
