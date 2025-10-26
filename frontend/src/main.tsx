@@ -7,6 +7,7 @@ import Chat from "./pages/Chat";
 import Writer from "./pages/Writer";
 import Reader from "./pages/Reader";
 import Outputs from "./pages/Outputs";
+import Settings from "./pages/Settings";
 import Research from "./pages/Research";
 
 import "./index.css";
@@ -20,6 +21,7 @@ function App() {
           <Route path="/chat" element={<Chat />} />
           <Route path="/writer" element={<Writer />} />
           <Route path="/reader" element={<Reader />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="/outputs" element={<Outputs />} />
           <Route path="/research" element={<Research />} />
           <Route path="*" element={<Navigate to="/chat" replace />} />

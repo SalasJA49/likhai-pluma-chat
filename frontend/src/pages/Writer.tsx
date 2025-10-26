@@ -16,6 +16,9 @@ export default function Writer() {
 
   useEffect(() => {
     fetchStyles().then(setStyles);
+    const onStylesChanged = async () => { try{ setStyles(await fetchStyles()); }catch(e){} };
+    window.addEventListener('styles:changed', onStylesChanged as EventListener);
+    return ()=> window.removeEventListener('styles:changed', onStylesChanged as EventListener);
   }, []);
 
   // --- Upload handlers (reads text-like files client-side) ---

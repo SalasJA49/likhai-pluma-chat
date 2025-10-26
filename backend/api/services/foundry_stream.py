@@ -17,6 +17,8 @@ from azure.ai.agents.models import (
     MessageDeltaChunk,
     ThreadRun,
 )
+from django.shortcuts import get_object_or_404
+from ..models import ChatFoundryThread, ChatThread
 
 # ---- Parse env JSON safely ----
 def _load_json_env(name: str) -> list[dict]:
@@ -52,7 +54,7 @@ def resolve_foundry(model_deployment: str, mode: str) -> dict:
 
     return {"endpoint": endpoint, "model_id": ww["model_id"]}
 
-# ---- Per-Django-process map: ChatThread.id -> Foundry thread_id ----
+# ---- Per-Django-process map: ChatThread.id -> Foundry thread_id (in-memory cache) ----
 _FOUNDATION_THREADS: dict[int, str] = {}
 
 # Single credential instance
@@ -90,9 +92,25 @@ def stream_foundry_chat(
     # Ensure a Foundry thread exists for this Django ChatThread
     f_thread_id = _FOUNDATION_THREADS.get(thread_db_id)
     if not f_thread_id:
+        # first, check persistent DB mapping (if present)
+        try:
+            mapping = ChatFoundryThread.objects.filter(thread_id=thread_db_id).first()
+            if mapping and mapping.foundry_thread_id:
+                f_thread_id = mapping.foundry_thread_id
+        except Exception:
+            mapping = None
+
+    if not f_thread_id:
+        # create a new foundry thread via the client
         thread = client.threads.create()
         f_thread_id = thread.id
         _FOUNDATION_THREADS[thread_db_id] = f_thread_id
+        # persist mapping (best-effort)
+        try:
+            th = ChatThread.objects.get(id=thread_db_id)
+            ChatFoundryThread.objects.update_or_create(thread=th, defaults={"foundry_thread_id": f_thread_id})
+        except Exception:
+            pass
 
     # Build content blocks (text only for now; hook in files here later if needed)
     content_blocks: list[MessageInputContentBlock] = [MessageInputTextBlock(text=user_text)]

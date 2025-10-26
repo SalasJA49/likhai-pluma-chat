@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     StylesAPI, StyleDetailAPI, ExtractStyleAPI, RewriteAPI, OutputsAPI,
     ChatStartAPI, ChatMessageAPI, ChatHistoryAPI, ChatStreamAPI,
-    ChatModelsAPI, ChatThreadsAPI, ResearchStreamAPI   # <-- add
+    ChatModelsAPI, ChatThreadsAPI, ChatRenameAPI, ResearchStreamAPI   # <-- add
 )
 
 urlpatterns = [
@@ -15,6 +15,7 @@ urlpatterns = [
     path("chat/message/", ChatMessageAPI.as_view()),
     path("chat/history/", ChatHistoryAPI.as_view()),
     path("chat/threads/", ChatThreadsAPI.as_view()),
+    path("chat/rename/", ChatRenameAPI.as_view()),
     path("chat/stream/", ChatStreamAPI.as_view()),
     path("chat/models/", ChatModelsAPI.as_view()),  # <-- add
     path("research/stream/", ResearchStreamAPI.as_view()),

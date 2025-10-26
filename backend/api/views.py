@@ -41,6 +41,25 @@ def _load_json_env(name: str) -> list[dict]:
         return []
 
 
+def _derive_title_from_text(text: str, max_len: int = 60) -> str:
+    """Create a short, human-friendly title from a piece of text.
+    Simple heuristic: take the first sentence or first N characters, collapse whitespace.
+    """
+    if not text:
+        return ""
+    s = text.strip()
+    # pick up to the first sentence-ending punctuation
+    import re
+    m = re.search(r"([^.?!]+[.?!])", s)
+    if m:
+        s = m.group(1)
+    # collapse whitespace
+    s = " ".join(s.split())
+    if len(s) > max_len:
+        s = s[:max_len].rsplit(" ", 1)[0] + "..."
+    return s
+
+
 def extract_text_from_files(django_files):
     out = []
     for f in django_files:
@@ -65,7 +84,14 @@ def extract_text_from_files(django_files):
 
 class StylesAPI(APIView):
     def get(self, _):
-        return Response(repo.list_styles())
+        # Try to honor an Azure-authenticated user id header like the old Streamlit app.
+        # Frontend (browser) may not send this header; when present we pass it to the repo
+        # so CosmosRepo can filter by user_id.
+        try:
+            user_id = _.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or _.META.get("HTTP_X_MS_CLIENT_PRINCIPAL_ID")
+        except Exception:
+            user_id = None
+        return Response(repo.list_styles(user_id=user_id))
 
     def post(self, request):
         name = (request.data.get("name") or "").strip()
@@ -120,6 +146,12 @@ class ChatStartAPI(APIView):
         th = ChatThread.objects.create(title=title, user_id=user_id)
         # seed with a system message if you want to customize per-thread
         ChatMessage.objects.create(thread=th, role="system", content="")
+        # create an initial assistant greeting so new chats show a welcoming message
+        try:
+            ChatMessage.objects.create(thread=th, role="assistant", content="Hello, how can I assist you today?")
+        except Exception:
+            # non-fatal: don't fail thread creation if greeting save fails
+            pass
         return Response({"thread_id": th.id}, status=201)
 
 # backend/api/views.py
@@ -155,6 +187,18 @@ class ChatMessageAPI(APIView):
 
         # Save user message
         ChatMessage.objects.create(thread=th, role="user", content=content)
+
+        # If the thread has no meaningful title yet, derive one from the user's first message
+        try:
+            cur_title = (th.title or "").strip()
+            if not cur_title or cur_title.lower().startswith("new") or cur_title.lower().startswith("chat"):
+                new_title = _derive_title_from_text(content) or cur_title
+                if new_title and new_title != cur_title:
+                    th.title = new_title
+                    th.save()
+        except Exception:
+            # non-fatal; don't block the request
+            pass
 
         # Build history for LLM
         history = [
@@ -201,6 +245,21 @@ class ChatThreadsAPI(APIView):
                 "created_at": th.created_at.isoformat(),
             })
         return Response(out)
+
+
+class ChatRenameAPI(APIView):
+    """Rename a chat thread title.
+    POST /api/chat/rename/ body: { thread_id, title }
+    """
+    def post(self, request):
+        thread_id = request.data.get("thread_id")
+        title = (request.data.get("title") or "").strip()
+        if not thread_id:
+            return Response({"detail": "thread_id required"}, status=400)
+        th = get_object_or_404(ChatThread, id=thread_id)
+        th.title = title
+        th.save()
+        return Response({"thread_id": th.id, "title": th.title})
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -266,6 +325,16 @@ class ChatStreamAPI(APIView):
 
                         assistant_text = _merge_tokens(tokens)
                         ChatMessage.objects.create(thread=th, role="assistant", content=assistant_text)
+                        # update thread title if it's still default/empty using assistant text as fallback
+                        try:
+                            cur_title = (th.title or "").strip()
+                            if not cur_title or cur_title.lower().startswith("new") or cur_title.lower().startswith("chat"):
+                                new_title = _derive_title_from_text(assistant_text) or cur_title
+                                if new_title and new_title != cur_title:
+                                    th.title = new_title
+                                    th.save()
+                        except Exception:
+                            pass
                     except Exception:
                         # don't crash the stream if DB save fails
                         pass

@@ -7,6 +7,7 @@ export default function Reader() {
   const [files, setFiles] = useState<File[]>([]);
   const [styleName, setStyleName] = useState("");
   const [result, setResult] = useState("");
+  const [saving, setSaving] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -39,6 +40,22 @@ export default function Reader() {
       setResult(r.style);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveStyle = async () => {
+    if (!styleName.trim() || !result) return;
+    setSaving(true);
+    try {
+      await (await import("../lib/api")).createStyle({ name: styleName.trim(), style: result, example: exampleText });
+      // notify other UI (writer) to refresh styles
+      try { window.dispatchEvent(new CustomEvent('styles:changed')); } catch(e){}
+      alert("Saved style.");
+    } catch (e:any) {
+      console.error(e);
+      alert("Failed to save style");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -153,6 +170,17 @@ export default function Reader() {
           >
             {loading ? "Extracting…" : "Extract Writing Style"}
           </button>
+          {result && (
+            <div className="mt-3">
+              <button
+                onClick={saveStyle}
+                disabled={saving || !styleName.trim()}
+                className="w-full h-[40px] rounded-lg bg-emerald-600 text-white font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? "Saving…" : "Save Extracted Style"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

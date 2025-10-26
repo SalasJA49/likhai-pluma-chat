@@ -1,6 +1,6 @@
 import os, time
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 from .base import DataRepo
 
@@ -24,11 +24,19 @@ class CosmosRepo(DataRepo):
         self.outputs = _database.get_container_client(OUTPUTS_CN)
 
     # -------- Styles --------
-    def list_styles(self) -> List[Dict[str, Any]]:
-        items = list(self.styles.query_items(
-            query="SELECT * FROM c ORDER BY c.name",
-            enable_cross_partition_query=True
-        ))
+    def list_styles(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        # If a user_id is provided, limit results to that user's styles (matches old Streamlit behavior).
+        if user_id:
+            items = list(self.styles.query_items(
+                query="SELECT * FROM c WHERE c.user_id = @user_id ORDER BY c.name",
+                parameters=[{"name":"@user_id","value": user_id}],
+                enable_cross_partition_query=True
+            ))
+        else:
+            items = list(self.styles.query_items(
+                query="SELECT * FROM c ORDER BY c.name",
+                enable_cross_partition_query=True
+            ))
         return [{"id": it["id"], "name": it.get("name",""), "style": it.get("style",""), "example": it.get("example","")}
                 for it in items]
 

@@ -1,9 +1,10 @@
 from .base import DataRepo
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from ..models import Style, Output
 
 class DjangoRepo(DataRepo):
-    def list_styles(self) -> List[Dict[str, Any]]:
+    def list_styles(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        # Django model does not currently track user_id; return all styles.
         return [{"id": s.id, "name": s.name, "style": s.style, "example": s.example}
                 for s in Style.objects.order_by("name")]
 

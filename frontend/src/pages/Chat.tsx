@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { startThread, getHistory, streamChat } from "../lib/api";
 
 type Msg = { role: "user" | "assistant"; content: string };
@@ -22,6 +23,8 @@ export default function Chat() {
   const [mode, setMode] = useState<"work" | "web">("work");
   const [deployment, setDeployment] = useState<string>("foundry/gpt-4.1-mini");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const location = useLocation();
+  const [isStreaming, setIsStreaming] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -54,6 +57,31 @@ export default function Chat() {
     })();
   }, []);
 
+  // react to URL thread_id changes (when user clicks sidebar links)
+  useEffect(() => {
+    (async () => {
+      try {
+        const params = new URLSearchParams(location.search);
+        const q = params.get("thread_id");
+        if (q) {
+          const tid = Number(q);
+          if (tid && tid !== threadId) {
+            setThreadId(tid);
+            const hist = await getHistory(tid);
+            setMessages(
+              (hist.messages || [])
+                .filter((m) => m.role === "user" || m.role === "assistant")
+                .map((m) => ({ role: m.role as Msg["role"], content: m.content }))
+            );
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
@@ -81,6 +109,11 @@ export default function Chat() {
       sse.on(
         (ev) => {
           const type = ev.type || "message";
+
+          if (type === "ready") {
+            setIsStreaming(true);
+            return;
+          }
 
           if (type === "token") {
             const chunk = String(ev.data || "");
@@ -113,12 +146,14 @@ export default function Chat() {
               return clone;
             });
           } else if (type === "done") {
+            setIsStreaming(false);
             try { window.dispatchEvent(new CustomEvent('threads:changed')); } catch(e) {}
           }
           // ignore "ready", "keepalive" in the UI; "done" triggers threads refresh
         },
         (e) => {
           console.error("SSE failed:", e);
+          setIsStreaming(false);
           setMessages((prev) => {
             const clone = prev.slice();
             const last = clone[clone.length - 1];
@@ -192,6 +227,10 @@ export default function Chat() {
       {/* Conversation */}
       <div className="bg-white rounded-xl shadow-sm ring-1 ring-slate-200 p-5">
         <h2 className="text-sm font-semibold text-slate-700 mb-3">Conversation</h2>
+
+        {isStreaming && (
+          <div className="text-xs text-slate-500 mb-2">Assistant is typing…</div>
+        )}
 
         <div
           ref={scrollRef}

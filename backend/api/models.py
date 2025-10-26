@@ -22,3 +22,12 @@ class ChatMessage(models.Model):
     role = models.CharField(max_length=20)  # "system" | "user" | "assistant"
     content = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ChatFoundryThread(models.Model):
+    """Persistent mapping from our ChatThread.id -> Foundry thread id (string).
+    Useful when running multiple Django workers so Foundry thread ids survive across processes.
+    """
+    thread = models.OneToOneField(ChatThread, on_delete=models.CASCADE, related_name="foundry")
+    foundry_thread_id = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
