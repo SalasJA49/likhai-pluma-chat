@@ -29,5 +29,7 @@ def rewrite_prompt(content_all: str, style: str, guidelines: str, example: str) 
 def extract_style(combined_text: str, temperature: float = 0.0) -> str:
     return chat(extract_style_prompt(combined_text), temperature=temperature)
 
-def rewrite_content(content_all: str, style: str, guidelines: str, example: str, temperature: float = 0.7) -> str:
+def rewrite_content(content_all: str, style: str, guidelines: str, example: str, temperature: float = 1.0) -> str:
+    # Some Azure deployments only accept the default temperature (1). Use 1.0 by default
+    # to avoid "unsupported value: 'temperature'" errors. Callers may still override.
     return chat(rewrite_prompt(content_all, style, guidelines, example), temperature=temperature)
