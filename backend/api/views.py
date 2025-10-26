@@ -192,7 +192,10 @@ class ExtractStyleAPI(APIView):
         combined = (example_text + "\n" + extract_text_from_files(files)).strip()
         if not combined:
             return Response({"detail": "empty input"}, status=status.HTTP_400_BAD_REQUEST)
-        style_text = llm_extract_style(combined_text=combined, temperature=0.0)
+
+        # Some Azure deployments only accept the default model temperature (1.0).
+        # Use 1.0 here to avoid invalid_request_error from the provider.
+        style_text = llm_extract_style(combined_text=combined, temperature=1.0)
         return Response({"style": style_text})
 
 

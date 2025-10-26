@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import (
     StylesAPI, StyleDetailAPI, ExtractStyleAPI, RewriteAPI, OutputsAPI,
+    OutputDownloadAPI,
     ChatStartAPI, ChatMessageAPI, ChatHistoryAPI, ChatStreamAPI,
     ChatModelsAPI, ChatThreadsAPI, ChatRenameAPI, ResearchStreamAPI   # <-- add
 )

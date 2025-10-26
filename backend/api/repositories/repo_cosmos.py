@@ -87,7 +87,8 @@ class CosmosRepo(DataRepo):
         return [{
             "id": it["id"],
             "style_name": it.get("styleId") or it.get("style_name",""),
-            "preview": (it.get("output","")[:280]),
+            # output may be None in some historic records; coerce to empty string before slicing
+            "preview": (it.get("output") or "")[:280],
             "created_at": it.get("updatedAt")
         } for it in items]
 
@@ -104,11 +105,14 @@ class CosmosRepo(DataRepo):
         return {"id": doc["id"], "style_name": style_name}
 
     def get_output(self, output_id: str) -> Optional[Dict[str, Any]]:
+        # Debug: log the lookup so we can diagnose missing items in dev logs
+        print(f"[CosmosRepo.get_output] looking up output_id={output_id}")
         items = list(self.outputs.query_items(
             query="SELECT * FROM c WHERE c.id = @id",
             parameters=[{"name": "@id", "value": output_id}],
             enable_cross_partition_query=True
         ))
+        print(f"[CosmosRepo.get_output] found_items={len(items)}")
         if not items:
             return None
         it = items[0]
