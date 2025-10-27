@@ -1,7 +1,3 @@
-# Chainlit application main entry point for BSP AI Assistant
-# This file handles authentication, chat profiles, startup routines, and message processing
-# Supporting both standard LLM providers via LiteLLM and Azure AI Foundry agents
-
 import time
 import chainlit as cl
 from utils.utils import (
@@ -13,8 +9,16 @@ from azure.identity import DefaultAzureCredential
 from utils.chats import chat_completion
 from utils.foundry import chat_agent
 from deep_research.pipeline import run_deep_research
-from dotenv import load_dotenv, find_dotenv
-load_dotenv(find_dotenv())
+
+# Import dynamic thinking modules
+from thinking.dynamic_thinking import dynamic_thinking, cached_dynamic_thinking
+from thinking.dynamic_config import (
+    should_use_dynamic_thinking, get_thinking_strategy, 
+    USE_DYNAMIC_THINKING
+)
+
+# Import analytics modules
+from analytics.analytics_handler import handle_analytics_command, analytics_handler
 
 logger = get_logger()
 
@@ -63,29 +67,34 @@ def header_auth_callback(headers: Dict) -> Optional[cl.User]:
         return None
 
 
-
 @cl.set_chat_profiles
 async def chat_profile():
-    llm_models = get_llm_models()  # should return a list[dict]
-
+    """
+    Set up available chat profiles based on configured LLM models.
+    
+    Creates chat profiles from the model configurations, allowing users
+    to select different language models for their conversations.
+    
+    Returns:
+        List[cl.ChatProfile]: List of available chat profiles
+    """
+    llm_models = get_llm_models()
+    # get a list of model names from llm_models
+    model_list = [f"{model["model_deployment"]}--{model["description"]}" for model in llm_models]
     profiles = []
-    for m in llm_models or []:
-        if not isinstance(m, dict):
-            continue
-        name = (m.get("model_deployment") or "unknown-deployment").strip()
-        desc = (m.get("description") or "No description").strip()
+
+    for item in model_list:
+        model_deployment, description = item.split("--")
+
+        # Create a profile for each model
         profiles.append(
             cl.ChatProfile(
-                name=name,
-                markdown_description=desc
+                name=model_deployment,
+                markdown_description=description
             )
         )
 
-    # Fallback if nothing parsed
-    if not profiles:
-        profiles = [cl.ChatProfile(name="default", markdown_description="Fallback profile")]
     return profiles
-
 
 
 @cl.set_starters
@@ -120,6 +129,11 @@ async def set_starters():
             label="Boost your knowledge",
             message="Help me learn about [topic]",
             icon="/public/book.png",
+            ),
+        cl.Starter(
+            label="Analyze data",
+            message="/analytics both - Upload a CSV or Excel file to get charts and insights",
+            icon="/public/chart.png",
             )
         ]
 
@@ -146,11 +160,11 @@ async def start():
     try:
         cl.user_session.set("chat_settings", await init_settings())
         llm_details = get_llm_details()
-        
+
         # Try to render the bridge element
         try:
             bridge = cl.CustomElement(name="SettingsBridge", props={}, display="inline")
-            msg = cl.Message(content="How can I help you today?", author="agent", elements=[bridge])
+            msg = cl.Message(content="How can I help you today?", author="LikhAI", elements=[bridge])
             await msg.send()
         except Exception as e:
             raise RuntimeError(f"Error on chat start: {str(e)}")
@@ -177,6 +191,49 @@ async def start():
 async def on_message(message: cl.Message):
     user_input = message.content.strip()
     mode = cl.user_session.get("mode", "default")
+    analytics_mode = cl.user_session.get("analytics_mode", False)
+
+    # Route to analytics if user typed the command
+    if user_input.lower().startswith("/analytics"):
+        await handle_analytics_command(user_input, message.elements)
+        return
+    
+    # If in analytics mode and not a command, treat as follow-up question about the data
+    if analytics_mode and not user_input.startswith("/"):
+        # Get stored data info
+        data_info = cl.user_session.get("analytics_data", {})
+        
+        # Add context about the data to the prompt
+        context_prompt = f"""[Analytics Context] 
+        The user is asking about data with:
+        - Shape: {data_info.get('shape', 'unknown')}
+        - Columns: {', '.join(data_info.get('columns', []))}
+
+        User question: {user_input}
+
+        Please answer based on the previous analysis and data context."""
+
+        # Use Foundry agent with context
+        try:
+        #    from utils.foundry import chat_agent
+            
+            msgs = append_message("user", context_prompt, message.elements)
+<<<<<<< HEAD
+         #   response = await chat_agent(context_prompt)
+=======
+            response = await chat_agent(context_prompt)
+>>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
+            
+            if response:
+                append_message("assistant", response)
+                # Response already sent by chat_agent in Foundry mode
+            else:
+                await cl.Message(content="I don't have enough information to answer that. Could you clarify?").send()
+            
+            return
+        except Exception as e:
+            logger.error(f"Error in analytics follow-up: {e}")
+            # Fall through to normal chat
 
     # Route to deep research if user typed a command or UI set the mode
     is_research_cmd = user_input.lower().startswith("/research ")
@@ -188,7 +245,6 @@ async def on_message(message: cl.Message):
 
         async def notify(event: str, data: dict):
             if event == "thinking":
-                # before: await thinking_box.update(content=...)
                 thinking_box.content = data.get("thoughts", "")
                 await thinking_box.update()
 
@@ -203,7 +259,6 @@ async def on_message(message: cl.Message):
                 ).send()
 
             elif event == "summarize":
-                # before: await progress_box.update(content="📝 Updating summary…")
                 progress_box.content = "📝 Updating summary…"
                 await progress_box.update()
 
@@ -224,8 +279,8 @@ async def on_message(message: cl.Message):
                     for i, u in enumerate(imgs)
                 ]
                 await cl.Message(
-                    content=data["summary"],   # markdown summary (no <div> HTML)
-                    elements=elements          # Chainlit renders the images for you
+                    content=data["summary"],
+                    elements=elements
                 ).send()
 
         try:
@@ -236,23 +291,36 @@ async def on_message(message: cl.Message):
             await cl.Message(content=f"❌ Research error: {e}").send()
         return
 
-    # ---------- normal chat path ----------
+    # ---------- normal chat path with DYNAMIC thinking ----------
     try:
         cl.user_session.set("start_time", time.time())
 
-        # keep your existing logging + session message handling
-        # logger.info(f"on_message mode: {mode}")
+        provider = cl.user_session.get("chat_settings", {}).get("model_provider", "litellm")
+        strategy = get_thinking_strategy(user_input)
+
+        # Always show the dynamic thinking if enabled (Foundry included)
+        if strategy == "llm" and USE_DYNAMIC_THINKING:
+            logger.info(f"Using dynamic LLM thinking for query: {user_input[:50]}...")
+            await cached_dynamic_thinking(user_input, provider, cache_enabled=True)
+
+        # Process the message
         msgs = append_message("user", user_input, message.elements)
 
-        provider = cl.user_session.get("chat_settings", {}).get("model_provider")
         if provider == "foundry":
-            full_response = await chat_agent(user_input)
+            # Foundry streams & updates its own Chainlit message.
+            full_response = await chat_agent(user_input)  # returns text but ALREADY rendered
+            if not full_response:
+                # Failsafe: if Foundry returned empty, send a minimal message so the UI isn't blank.
+                await cl.Message(content="(No response received from the agent)").send()
+            else:
+                append_message("assistant", full_response)
+            # DO NOT cl.Message(...).send() again here — avoids duplicate
         else:
+            # Non-Foundry providers: we render once here.
             full_response = await chat_completion(msgs)
-
-        append_message("assistant", full_response)
-        await cl.Message(content=full_response).send()
+            append_message("assistant", full_response)
+            await cl.Message(content=full_response).send()
 
     except Exception as e:
         await cl.Message(content=f"An error occurred: {e}", author="Error").send()
-        # logger.error(f"Error: {e}")
+        logger.error(f"Error in on_message: {e}")

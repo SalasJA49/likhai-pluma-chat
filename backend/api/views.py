@@ -32,6 +32,9 @@ from .services.foundry_stream import stream_foundry_chat
 from .services.foundry_stream import resolve_foundry
 from .models import ChatFoundryThread
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Azure Foundry client libs
 from azure.identity import DefaultAzureCredential
 from azure.ai.agents import AgentsClient
@@ -774,19 +777,103 @@ class ResearchStreamAPI(APIView):
 
         # run the async pipeline in a dedicated thread with its own loop
         def runner():
-            import chatui.deep_research.pipeline as dr
-            async def main():
-                try:
-                    result = await dr.run_deep_research(topic, notify=notify)
-                    # final "done" event with summary
-                    q.put(sse_format(json.dumps({"summary": result}), event="done"))
-                except Exception as e:
-                    q.put(sse_format(json.dumps({"error": str(e)}), event="error"))
-                finally:
-                    # sentinel to close the stream
-                    q.put(b"__CLOSE__")
+            # create and set a fresh event loop for this thread BEFORE importing the pipeline
+            loop = asyncio.new_event_loop()
+            # bind this loop to the current thread
+            asyncio.set_event_loop(loop)
 
-            asyncio.run(main())
+            try:
+                # now import the pipeline so any async clients it constructs bind to this loop
+                try:
+                    from .deep_research import pipeline as dr
+                except Exception as imp_e:
+                    logger.exception("deep_research import failed")
+                    try:
+                        q.put(sse_format(json.dumps({"detail": f"deep_research import failed: {imp_e}"}), event="error"), timeout=2)
+                    except Exception:
+                        pass
+                    q.put(b"__CLOSE__")
+                    return
+
+                # Emit a quick debug frame to confirm the import happened and the
+                # runner thread is active. This helps determine if the pipeline is
+                # being executed even when the LLM doesn't emit 'thinking' notes.
+                try:
+                    q.put(sse_format(json.dumps({"detail": "deep_research imported"}), event="debug"))
+                except Exception:
+                    pass
+
+                async def main_and_cleanup():
+                    try:
+                        result = await dr.run_deep_research(topic, notify=notify)
+                        # final "done" event with summary
+                        q.put(sse_format(json.dumps({"summary": result}), event="done"))
+                    except Exception as e:
+                        logger.exception("deep_research runtime error")
+                        try:
+                            q.put(sse_format(json.dumps({"detail": str(e)}), event="error"), timeout=2)
+                        except Exception:
+                            pass
+                    finally:
+                        # attempt to gracefully close/cleanup async clients created by the pipeline module
+                        try:
+                            # common pattern: models/clients exposing an aclose coroutine
+                            ds = getattr(dr, "deep_seek_model", None)
+                            if ds is not None:
+                                aclose = getattr(ds, "aclose", None) or getattr(ds, "close", None)
+                                if aclose is not None:
+                                    if asyncio.iscoroutinefunction(aclose):
+                                        await aclose()
+                                    else:
+                                        try:
+                                            aclose()
+                                        except Exception:
+                                            pass
+                        except Exception:
+                            logger.exception("deep_research cleanup failed")
+                        # sentinel to close the stream
+                        q.put(b"__CLOSE__")
+
+                # Run the pipeline and cleanup on this loop
+                try:
+                    # notify via queue that we're about to start the async run
+                    try:
+                        q.put(sse_format(json.dumps({"detail": "starting deep_research run"}), event="debug"))
+                    except Exception:
+                        pass
+                    loop.run_until_complete(main_and_cleanup())
+                except Exception as run_e:
+                    logger.exception("deep_research async run failed")
+                    try:
+                        q.put(sse_format(json.dumps({"detail": f"async run failed: {run_e}"}), event="error"), timeout=2)
+                    except Exception:
+                        pass
+
+                # After the main run completes, try to cancel any lingering tasks and
+                # allow async generators to finish before closing the loop.
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    for t in pending:
+                        try:
+                            t.cancel()
+                        except Exception:
+                            pass
+                    if pending:
+                        try:
+                            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                        except Exception:
+                            pass
+                    try:
+                        loop.run_until_complete(loop.shutdown_asyncgens())
+                    except Exception:
+                        pass
+                except Exception:
+                    logger.exception("error during deep_research loop shutdown")
+            finally:
+                try:
+                    loop.close()
+                except Exception:
+                    pass
 
         threading.Thread(target=runner, daemon=True).start()
 

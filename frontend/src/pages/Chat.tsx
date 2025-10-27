@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { startThread, getHistory, streamChat, uploadChatFiles, uploadChatFilesFoundry } from "../lib/api";
+import { startThread, getHistory, streamChat, uploadChatFiles, uploadChatFilesFoundry, streamResearch, edaProcess } from "../lib/api";
 
 type Attachment = { id: number; filename: string; blob_url: string; content_type: string };
-type Msg = { role: "user" | "assistant"; content: string; attachments?: Attachment[] };
+type Msg = { role: "user" | "assistant"; content: string; attachments?: Attachment[]; pending?: boolean; completed?: boolean; figure?: any; title?: string };
 
 // If you want these from env later, you can fetch them from an endpoint.
 // For now, keep simple + explicit.
@@ -25,9 +25,76 @@ export default function Chat() {
   const [model, setModel] = useState<string>(MODEL_OPTIONS[0].value);
   const [mode, setMode] = useState<"work" | "web">("work");
   const [deployment] = useState<string>("foundry/gpt-4.1-mini");
+  const [feature, setFeature] = useState<string>("none");
   const scrollRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
   const [isStreaming, setIsStreaming] = useState(false);
+  const [debugEvents, setDebugEvents] = useState<Array<{time:number; type:string; payload:any}>>([]);
+  const [showDebug, setShowDebug] = useState(false);
+
+  // Track indices of placeholder messages for live step updates
+  const stepIdxRef = useRef<Record<string, number | undefined>>({});
+
+  // Helper to push assistant message and optionally remember its index under a key
+  const pushAssistantMsg = (content: string, opts?: { pending?: boolean; key?: string }) => {
+    setMessages((prev) => {
+      const idx = prev.length;
+      if (opts?.key) stepIdxRef.current[opts.key] = idx;
+      return [...prev, { role: "assistant", content, pending: !!opts?.pending }];
+    });
+  };
+
+  // Helpers to render pipeline steps as conversation bubbles
+  const replaceOrPushAssistant = (content: string, opts?: { pending?: boolean; key?: string; completed?: boolean }) =>
+    setMessages((prev) => {
+      const clone = prev.slice();
+      const last = clone[clone.length - 1];
+      if (last?.role === "assistant" && (!last.content || String(last.content).trim() === "")) {
+        last.content = content;
+        if (opts?.pending) last.pending = true; else delete last.pending;
+        if (opts?.completed) last.completed = true; else delete last.completed;
+        if (opts?.key) stepIdxRef.current[opts.key] = clone.length - 1;
+        return clone;
+      }
+      const idx = clone.length;
+      if (opts?.key) stepIdxRef.current[opts.key] = idx;
+      return [...clone, { role: "assistant", content, pending: !!opts?.pending, completed: !!opts?.completed }];
+    });
+
+  // Replace content of a remembered step message
+  const replaceStep = (key: string, content: string, opts?: { pending?: boolean; completed?: boolean }) => {
+    setMessages((prev) => {
+      const idx = stepIdxRef.current[key];
+      if (idx === undefined) return prev;
+      const clone = prev.slice();
+      const msg = clone[idx];
+      if (!msg) return prev;
+      msg.content = content;
+      if (opts?.pending) msg.pending = true; else delete msg.pending;
+      if (opts?.completed) msg.completed = true; else delete msg.completed;
+      return clone;
+    });
+  };
+  const safeJSON = (s: string) => { try { return JSON.parse(s); } catch { return null; } };
+  const fmt = (s: string) => (s || "").trim();
+
+  // Lightweight Plotly renderer for figure JSON (from backend)
+  function PlotlyChart({ figure }: { figure: any }) {
+    const ref = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+      const P: any = (window as any).Plotly;
+      if (ref.current && P && figure) {
+        try {
+          const data = figure.data || [];
+          const layout = figure.layout || {};
+          P.newPlot(ref.current, data, layout, { displayModeBar: false });
+        } catch (e) {
+          // no-op
+        }
+      }
+    }, [figure]);
+    return <div ref={ref} className="w-full" />;
+  }
 
   useEffect(() => {
     (async () => {
@@ -210,87 +277,334 @@ export default function Chat() {
     setMessages((prev) => [...prev, { role: "user", content: finalUserText }, { role: "assistant", content: "" }]);
 
     try {
-      const sse = streamChat({
-        thread_id: threadId,
-        content: finalUserText,
-        // always Foundry:
-        provider: "foundry",
-        mode,               // "work" or "web"
-        deployment  
-      } as any);
+      // If an advanced feature is selected, route to its stream endpoint.
+      if (feature === "deep_research") {
+        const sse = streamResearch(String(finalUserText || ""));
+        sse.on(
+          async (ev) => {
+              // Log raw events for debugging (keeps the most recent 50)
+              try {
+                const parsed = JSON.parse(String(ev.data || ""));
+                setDebugEvents((prev) => [{ time: Date.now(), type: ev.type || "message", payload: parsed }, ...prev].slice(0, 50));
+              } catch (e) {
+                setDebugEvents((prev) => [{ time: Date.now(), type: ev.type || "message", payload: String(ev.data || "") }, ...prev].slice(0, 50));
+              }
 
-      sse.on(
-        async (ev) => {
-          const type = ev.type || "message";
-
-          if (type === "ready") {
-            setIsStreaming(true);
-            return;
-          }
-
-          if (type === "token") {
-            const chunk = String(ev.data || "");
-            setMessages((prev) => {
-              const clone = prev.slice();
-              const last = clone[clone.length - 1];
-              if (last?.role === "assistant") {
-                const prevText = last.content || "";
-                // Only insert a space when both the previous char and the chunk start are alphanumeric
-                const prevEndsAlnum = /[A-Za-z0-9]$/.test(prevText);
-                const chunkStartsAlnum = /^[A-Za-z0-9]/.test(chunk);
-                if (prevEndsAlnum && chunkStartsAlnum) {
-                  last.content += " " + chunk;
-                } else {
-                  last.content += chunk;
+            const type = ev.type || "message";
+            if (type === "ready") {
+              setIsStreaming(true);
+              // fresh run: clear step indices and create a status message
+              stepIdxRef.current = {};
+              // replace the initial empty assistant bubble with a status row
+              replaceOrPushAssistant("Starting deep research…", { pending: true, key: "status" });
+              return;
+            }
+            if (type === "token") {
+              const chunk = String(ev.data || "");
+              setMessages((prev) => {
+                const clone = prev.slice();
+                const last = clone[clone.length - 1];
+                if (last?.role === "assistant") {
+                  const prevText = last.content || "";
+                  const prevEndsAlnum = /[A-Za-z0-9]$/.test(prevText);
+                  const chunkStartsAlnum = /^[A-Za-z0-9]/.test(chunk);
+                  if (prevEndsAlnum && chunkStartsAlnum) last.content += " " + chunk;
+                  else last.content += chunk;
                 }
+                return clone;
+              });
+            }
+            else if (type === "thinking") {
+              const parsed = safeJSON(String(ev.data || ""));
+              const thoughts = fmt(parsed?.thoughts || parsed?.thought || String(ev.data || ""));
+              // push a separate step message; keep status bubble
+              pushAssistantMsg(`Step: Thinking\n\n${thoughts}`);
+            } else if (type === "debug_model_response" || type === "debug") {
+              // Don't surface internal debug frames in the chat; they remain in the debug panel
+              // (We still capture them below in debugEvents.)
+            }
+            // Handle structured pipeline events as separate, human-readable steps
+            else if (type === "generate_query") {
+              const p = safeJSON(String(ev.data || "")) || {};
+              const q = fmt(p.query || "");
+              const r = fmt(p.rationale || "");
+              pushAssistantMsg(`Step: Initial query\n\nQuery: ${q}\nRationale: ${r}`);
+              // anticipate next step: searching the web…
+              pushAssistantMsg("Searching the web…", { pending: true, key: "web" });
+            } else if (type === "web_research") {
+              const p = safeJSON(String(ev.data || "")) || {};
+              const sources: any[] = Array.isArray(p.sources) ? p.sources : [];
+              const lines = sources.slice(0, 3).map((s, i) => `- ${s.title || s.url || `Source ${i+1}`}${s.url ? `\n  ${s.url}` : ""}`).join("\n");
+              // update web placeholder if present, else push
+              if (stepIdxRef.current["web"] !== undefined) {
+                replaceStep("web", `Step: Web research\n\nSources:\n${lines || "(no sources)"}`);
+              } else {
+                pushAssistantMsg(`Step: Web research\n\nSources:\n${lines || "(no sources)"}`);
               }
-              return clone;
-            });
-          } else if (type === "error") {
-            let msg = "⚠️ Sorry, something went wrong.";
-            try {
-              const parsed = JSON.parse(String(ev.data || "{}"));
-              if (parsed?.detail) msg = `⚠️ ${parsed.detail}`;
-            } catch {}
+              // anticipate summarize step
+              pushAssistantMsg("Summarizing sources…", { pending: true, key: "sum" });
+            } else if (type === "summarize") {
+              const p = safeJSON(String(ev.data || "")) || {};
+              const summary = fmt(p.summary || String(ev.data || ""));
+              if (stepIdxRef.current["sum"] !== undefined) {
+                replaceStep("sum", `Step: Summary update\n\n${summary}`);
+              } else {
+                pushAssistantMsg(`Step: Summary update\n\n${summary}`);
+              }
+              // anticipate reflection step
+              pushAssistantMsg("Reflecting on gaps…", { pending: true, key: "refl" });
+            } else if (type === "reflection") {
+              const p = safeJSON(String(ev.data || "")) || {};
+              const gap = fmt(p.knowledge_gap || "");
+              const q2 = fmt(p.query || "");
+              if (stepIdxRef.current["refl"] !== undefined) {
+                replaceStep("refl", `Step: Reflection\n\nKnowledge gap: ${gap}\nFollow-up query: ${q2}`);
+              } else {
+                pushAssistantMsg(`Step: Reflection\n\nKnowledge gap: ${gap}\nFollow-up query: ${q2}`);
+              }
+            } else if (type === "finalize") {
+              const p = safeJSON(String(ev.data || "")) || {};
+              const summary = fmt(p.summary || String(ev.data || ""));
+              const imgs: string[] = Array.isArray(p.images) ? p.images.slice(0,2) : [];
+              const imgLines = imgs.map((u,i)=>`Image ${i+1}: ${u}`).join("\n");
+              // if we had a finalize placeholder, replace it; otherwise push
+              if (stepIdxRef.current["finalize"] !== undefined) {
+                replaceStep("finalize", `Final summary\n\n${summary}${imgLines? `\n\n${imgLines}`: ""}`);
+              } else {
+                pushAssistantMsg(`Final summary\n\n${summary}${imgLines? `\n\n${imgLines}`: ""}`);
+              }
+            } else if (type === "error") {
+              let msg = "⚠️ Sorry, something went wrong.";
+              try {
+                const parsed = JSON.parse(String(ev.data || "{}"));
+                if (parsed?.detail) msg = `⚠️ ${parsed.detail}`;
+              } catch {}
+              setMessages((prev) => {
+                const clone = prev.slice();
+                const last = clone[clone.length - 1];
+                if (last?.role === "assistant" && !last.content) last.content = msg;
+                return clone;
+              });
+            } else if (type === "done") {
+              setIsStreaming(false);
+              // If backend sent a final summary in the 'done' frame, surface it
+              const p = safeJSON(String(ev.data || ""));
+              if (p && p.summary) {
+                const finalText = `Final summary\n\n${fmt(p.summary)}`;
+                setMessages((prev) => {
+                  const clone = prev.slice();
+                  const last = clone[clone.length - 1];
+                  if (last?.role === "assistant" && typeof last.content === "string" && last.content.startsWith("Final summary")) {
+                    return clone; // avoid duplicate
+                  }
+                  return [...clone, { role: "assistant", content: finalText }];
+                });
+              }
+              // update status row to completed with a check icon
+              if (stepIdxRef.current["status"] !== undefined) {
+                replaceStep("status", "Deep Research Complete", { pending: false, completed: true });
+              }
+              // We intentionally avoid replacing messages with history here to prevent races.
+              try { window.dispatchEvent(new CustomEvent('threads:changed')); } catch(e) {}
+            }
+          },
+          (e) => {
+            console.error("Deep research SSE failed:", e);
+            setIsStreaming(false);
             setMessages((prev) => {
               const clone = prev.slice();
               const last = clone[clone.length - 1];
-              if (last?.role === "assistant" && !last.content) last.content = msg;
+              if (last?.role === "assistant" && !last.content) {
+                last.content = "⚠️ Sorry, something went wrong.";
+              }
               return clone;
             });
-          } else if (type === "done") {
-            setIsStreaming(false);
-            try { window.dispatchEvent(new CustomEvent('threads:changed')); } catch(e) {}
-            // Ensure we refresh canonical history from the server so persisted user messages
-            // saved by the streaming endpoint are reflected in the UI.
-            try {
-              if (threadId) {
-                const hist = await getHistory(threadId);
-                setMessages(
-                  (hist.messages || [])
-                    .filter((m) => m.role === "user" || m.role === "assistant")
-                    .map((m) => ({ role: m.role as Msg["role"], content: m.content }))
-                );
-              }
-            } catch (e) {
-              // ignore refresh errors
-            }
           }
-          // ignore "ready", "keepalive" in the UI; "done" triggers threads refresh
-        },
-  (e) => {
-          console.error("SSE failed:", e);
-          setIsStreaming(false);
-          setMessages((prev) => {
-            const clone = prev.slice();
-            const last = clone[clone.length - 1];
-            if (last?.role === "assistant" && !last.content) {
-              last.content = "⚠️ Sorry, something went wrong.";
+        );
+      } else if (feature === "eda") {
+        // EDA flow: if a file is attached, send it; otherwise expect JSON in the prompt or simple demo data
+        try {
+          let payload: any;
+          if (attachments && attachments.length > 0) {
+            const fd = new FormData();
+            fd.append("prompt", finalUserText || "");
+            fd.append("file", attachments[0]);
+            payload = fd;
+          } else {
+            // try to parse JSON array/object from the prompt; if not, return a friendly hint
+            let data: any = undefined;
+            try {
+              data = JSON.parse(finalUserText);
+            } catch {}
+            if (!data) {
+              setMessages((prev) => [...prev, { role: "assistant", content: "📁 For EDA, attach a CSV/XLSX file or paste JSON data in the message." }]);
+              return;
             }
-            return clone;
-          });
+            payload = { data, prompt: "" };
+          }
+
+          // Add a status row with spinner
+          replaceOrPushAssistant("Starting EDA…", { pending: true, key: "eda-status" });
+          const res = await edaProcess(payload);
+          // Update status
+          replaceStep("eda-status", "EDA Complete", { completed: true });
+
+          // Render charts: each chart is a Plotly figure JSON
+          const charts = (res?.charts?.charts || []) as Array<{ figure: any; title?: string; reason?: string; type?: string }>;
+          if (charts.length > 0) {
+            charts.forEach((c, i) => {
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", content: `Chart ${i + 1}${c.title ? `: ${c.title}` : ""}${c.reason ? `\n\n_${c.reason}_` : ""}`, figure: c.figure, title: c.title },
+              ]);
+            });
+          }
+
+          // Show SQL transformation info if any
+          const anyRes: any = res as any;
+          if (anyRes?.sql_transformation) {
+            const info = anyRes.sql_transformation;
+            const sqlMd = `## Data Transformation Applied\n\n**SQL Query:**\n\n\`\`\`sql\n${info.query}\n\`\`\`\n\n**Summary:** ${info.summary}\n\n**Shape:** Original ${info.original_shape?.[0]}×${info.original_shape?.[1]} → Result ${info.result_shape?.[0]}×${info.result_shape?.[1]}`;
+            setMessages((prev) => [...prev, { role: "assistant", content: sqlMd }]);
+          }
+
+          // Render insights synopsis
+          const insights = res?.insights?.data;
+          if (insights) {
+            const parts: string[] = [];
+            if (insights.key_findings) parts.push(`## Key findings\n${insights.key_findings}`);
+            if (Array.isArray(insights.insights) && insights.insights.length) {
+              parts.push(`### Insights\n${insights.insights.map((x: string, idx: number) => `${idx + 1}. ${x}`).join("\n")}`);
+            }
+            if (Array.isArray(insights.recommendations) && insights.recommendations.length) {
+              parts.push(`### Recommendations\n${insights.recommendations.map((x: string, idx: number) => `${idx + 1}. ${x}`).join("\n")}`);
+            }
+            setMessages((prev) => [...prev, { role: "assistant", content: parts.join("\n\n") }]);
+          }
+        } catch (err: any) {
+          setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ EDA error: ${err?.message || err}` }]);
         }
-      );
+      } else {
+        const sse = streamChat({
+          thread_id: threadId,
+          content: finalUserText,
+          // always Foundry:
+          provider: "foundry",
+          mode, // "work" or "web"
+          deployment,
+        } as any);
+
+        sse.on(
+          async (ev) => {
+            const type = ev.type || "message";
+
+            if (type === "ready") {
+              setIsStreaming(true);
+              return;
+            }
+
+            if (type === "token") {
+              const chunk = String(ev.data || "");
+              setMessages((prev) => {
+                const clone = prev.slice();
+                const last = clone[clone.length - 1];
+                if (last?.role === "assistant") {
+                  const prevText = last.content || "";
+                  // Only insert a space when both the previous char and the chunk start are alphanumeric
+                  const prevEndsAlnum = /[A-Za-z0-9]$/.test(prevText);
+                  const chunkStartsAlnum = /^[A-Za-z0-9]/.test(chunk);
+                  if (prevEndsAlnum && chunkStartsAlnum) {
+                    last.content += " " + chunk;
+                  } else {
+                    last.content += chunk;
+                  }
+                }
+                return clone;
+              });
+            } else if (type === "error") {
+              let msg = "⚠️ Sorry, something went wrong.";
+              try {
+                const parsed = JSON.parse(String(ev.data || "{}"));
+                if (parsed?.detail) msg = `⚠️ ${parsed.detail}`;
+              } catch {}
+              setMessages((prev) => {
+                const clone = prev.slice();
+                const last = clone[clone.length - 1];
+                if (last?.role === "assistant" && !last.content) last.content = msg;
+                return clone;
+              });
+            } else if (type === "thinking") {
+              try {
+                const parsed = JSON.parse(String(ev.data || "{}"));
+                const thoughts = parsed?.thoughts || parsed?.thought || String(ev.data || "");
+                setMessages((prev) => {
+                  const clone = prev.slice();
+                  const last = clone[clone.length - 1];
+                  if (last?.role === "assistant") last.content = (last.content || "") + "\n\n[Thinking]\n" + thoughts;
+                  return clone;
+                });
+              } catch (e) {
+                const chunk = String(ev.data || "");
+                setMessages((prev) => {
+                  const clone = prev.slice();
+                  const last = clone[clone.length - 1];
+                  if (last?.role === "assistant") last.content = (last.content || "") + "\n\n[Thinking]\n" + chunk;
+                  return clone;
+                });
+              }
+            } else if (type === "debug_model_response" || type === "debug") {
+              try {
+                const parsed = JSON.parse(String(ev.data || "{}"));
+                const text = parsed?.raw || parsed?.detail || String(ev.data || "");
+                setMessages((prev) => {
+                  const clone = prev.slice();
+                  const last = clone[clone.length - 1];
+                  if (last?.role === "assistant") last.content = (last.content || "") + "\n\n[Model]\n" + text;
+                  return clone;
+                });
+              } catch (e) {
+                const chunk = String(ev.data || "");
+                setMessages((prev) => {
+                  const clone = prev.slice();
+                  const last = clone[clone.length - 1];
+                  if (last?.role === "assistant") last.content = (last.content || "") + "\n\n[Model]\n" + chunk;
+                  return clone;
+                });
+              }
+            } else if (type === "done") {
+              setIsStreaming(false);
+              try {
+                window.dispatchEvent(new CustomEvent("threads:changed"));
+              } catch (e) {}
+              try {
+                if (threadId) {
+                  const hist = await getHistory(threadId);
+                  setMessages(
+                    (hist.messages || [])
+                      .filter((m) => m.role === "user" || m.role === "assistant")
+                      .map((m) => ({ role: m.role as Msg["role"], content: m.content }))
+                  );
+                }
+              } catch (e) {
+                // ignore refresh errors
+              }
+            }
+            // ignore "ready", "keepalive" in the UI; "done" triggers threads refresh
+          },
+          (e) => {
+            console.error("SSE failed:", e);
+            setIsStreaming(false);
+            setMessages((prev) => {
+              const clone = prev.slice();
+              const last = clone[clone.length - 1];
+              if (last?.role === "assistant" && !last.content) {
+                last.content = "⚠️ Sorry, something went wrong.";
+              }
+              return clone;
+            });
+          }
+        );
+      }
     } finally {
       setSending(false);
       // clear attachments after attempt
@@ -357,6 +671,21 @@ export default function Chat() {
               </button>
             </div>
           </div>
+          {/* Feature selector (Deep Research, Reasoning, EDA) */}
+          <div className="flex flex-col">
+            <label className="block text-sm font-medium text-slate-700 mb-2">Feature</label>
+            <select
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value={feature}
+              onChange={(e) => setFeature(e.target.value)}
+            >
+              <option value="none">None</option>
+              <option value="deep_research">Deep Research</option>
+              <option value="reasoning">Reasoning (coming)</option>
+              <option value="eda">EDA</option>
+            </select>
+            <p className="text-xs text-slate-500 mt-2">Extra tools like Deep Research will stream results into the chat.</p>
+          </div>
         </div>
       </div>
 
@@ -386,7 +715,21 @@ export default function Chat() {
                     : "bg-white border border-slate-200 text-slate-800"
                 }`}
               >
-                <div>{m.content || (m.role === "assistant" ? "…" : "")}</div>
+                <div className="flex items-start gap-2">
+                  {m.pending ? (
+                    <span className="mt-1 inline-block w-4 h-4 rounded-full border-2 border-slate-300 border-t-blue-500 animate-spin" aria-label="loading" />
+                  ) : m.completed ? (
+                    <span className="mt-1 inline-flex items-center justify-center w-4 h-4 text-green-600" aria-label="done">✓</span>
+                  ) : null}
+                  <div className="flex-1 min-w-0">
+                    <div>{m.content || (m.role === "assistant" ? "…" : "")}</div>
+                    {m.figure ? (
+                      <div className="mt-2 border border-slate-200 rounded">
+                        <PlotlyChart figure={m.figure} />
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
                 {m.attachments && m.attachments.length > 0 && (
                   <div className="mt-2 space-y-1">
                     {m.attachments.map((a) => (
@@ -408,6 +751,30 @@ export default function Chat() {
         </div>
 
         {/* Composer */}
+        {/* Debug event log (shows raw SSE frames) */}
+        {debugEvents.length > 0 && (
+          <div className="mt-3 p-3 rounded border border-slate-200 bg-slate-50 text-xs">
+            <div className="flex items-center justify-between mb-2">
+              <div className="font-medium">SSE events (recent)</div>
+              <div className="space-x-2">
+                <button onClick={()=>setShowDebug(s=>!s)} className="px-2 py-1 rounded bg-white border text-xs">{showDebug? 'Hide':'Show'}</button>
+                <button onClick={()=>setDebugEvents([])} className="px-2 py-1 rounded bg-white border text-xs">Clear</button>
+              </div>
+            </div>
+            {showDebug ? (
+              <div className="max-h-40 overflow-y-auto">
+                {debugEvents.map((e, idx) => (
+                  <div key={idx} className="mb-2">
+                    <div className="text-[11px] text-slate-500">{new Date(e.time).toLocaleTimeString()} · <strong>{e.type}</strong></div>
+                    <pre className="whitespace-pre-wrap text-xs mt-1 bg-white border rounded p-2">{typeof e.payload === 'string' ? e.payload : JSON.stringify(e.payload, null, 2)}</pre>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500">Events received: {debugEvents.length}</div>
+            )}
+          </div>
+        )}
         <div className="mt-4 flex items-end gap-3">
           <textarea
             className="flex-1 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 p-3 h-[64px] resize-y"
