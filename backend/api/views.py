@@ -1,6 +1,6 @@
 from .repositories.factory import get_repo
 from .services.prompts import extract_style as llm_extract_style, rewrite_content as llm_rewrite
-from .services.config import LLM_LOCALS
+from .services.config import LLM_LOCALS, load_locals
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -141,9 +141,13 @@ class LocalsAPI(APIView):
     GET /api/locals/
     """
     def get(self, request):
-        # Only return specific safe keys for the frontend
+        # Only return specific safe keys for the frontend. Read fresh to pick up file changes.
+        try:
+            locals_data = load_locals() or {}
+        except Exception:
+            locals_data = LLM_LOCALS or {}
         allowed = ["relevant_guidelines", "guideline_summaries"]
-        out = {k: LLM_LOCALS.get(k, {}) for k in allowed}
+        out = {k: locals_data.get(k, {}) for k in allowed}
         return Response(out)
 
 
@@ -888,6 +892,107 @@ class ResearchStreamAPI(APIView):
                     yield item
                 except Empty:
                     # keep-alive
+                    yield sse_format("ping", event="keepalive")
+
+        return sse_response(gen())
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class ReasoningStreamAPI(APIView):
+    """
+    POST /api/reasoning/stream
+    body: { query: str, provider?: str, model_deployment?: str, mode?: 'work'|'web' }
+    Streams minimal SSE status events and returns final markdown.
+    """
+    def post(self, request):
+        query = (request.data.get("query") or "").strip()
+        provider = (request.data.get("provider") or "").strip().lower() or None
+        model_deployment = (request.data.get("model_deployment") or request.data.get("deployment") or request.data.get("model") or "").strip() or None
+        mode = (request.data.get("mode") or "").strip().lower() or None
+        if not query:
+            return Response({"detail": "query required"}, status=400)
+
+        q: Queue[bytes] = Queue(maxsize=100)
+
+        async def notify(payload: dict):
+            try:
+                frame = sse_format(json.dumps(payload), event=str(payload.get("event") or "message"))
+                q.put(frame, timeout=2)
+            except Exception:
+                pass
+
+        def runner():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                try:
+                    from .reasoning import reasoning as rsn
+                except Exception as imp_e:
+                    logger.exception("reasoning import failed")
+                    try:
+                        q.put(sse_format(json.dumps({"detail": f"reasoning import failed: {imp_e}"}), event="error"), timeout=2)
+                    except Exception:
+                        pass
+                    q.put(b"__CLOSE__")
+                    return
+
+                async def main_and_cleanup():
+                    try:
+                        markdown = await rsn.run_reasoning(query, notify=notify, provider=provider, model_deployment=model_deployment, mode=mode)
+                        q.put(sse_format(json.dumps({"markdown": markdown}), event="done"))
+                    except Exception as e:
+                        logger.exception("reasoning runtime error")
+                        try:
+                            q.put(sse_format(json.dumps({"detail": str(e)}), event="error"), timeout=2)
+                        except Exception:
+                            pass
+                    finally:
+                        q.put(b"__CLOSE__")
+
+                try:
+                    loop.run_until_complete(main_and_cleanup())
+                except Exception as run_e:
+                    logger.exception("reasoning async run failed")
+                    try:
+                        q.put(sse_format(json.dumps({"detail": f"async run failed: {run_e}"}), event="error"), timeout=2)
+                    except Exception:
+                        pass
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    for t in pending:
+                        try:
+                            t.cancel()
+                        except Exception:
+                            pass
+                    if pending:
+                        try:
+                            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                        except Exception:
+                            pass
+                    try:
+                        loop.run_until_complete(loop.shutdown_asyncgens())
+                    except Exception:
+                        pass
+                except Exception:
+                    logger.exception("error during reasoning loop shutdown")
+            finally:
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+
+        threading.Thread(target=runner, daemon=True).start()
+
+        def gen():
+            yield sse_format("started", event="ready")
+            while True:
+                try:
+                    item = q.get(timeout=30)
+                    if item == b"__CLOSE__":
+                        break
+                    yield item
+                except Empty:
                     yield sse_format("ping", event="keepalive")
 
         return sse_response(gen())

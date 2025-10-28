@@ -95,3 +95,8 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+
+# --- Optional: Analytics provider selection & Foundry config ---
+EDA_DEFAULT_PROVIDER = os.getenv("EDA_DEFAULT_PROVIDER", "")
+FOUNDRY_API_ENDPOINT = os.getenv("FOUNDRY_API_ENDPOINT", "")
+FOUNDRY_AGENT_ID = os.getenv("FOUNDRY_AGENT_ID", "")

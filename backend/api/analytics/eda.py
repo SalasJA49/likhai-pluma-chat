@@ -12,10 +12,16 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
+from django.conf import settings
 
 from .chart_generator import ChartGenerator
 from .insight_generator import calculate_statistics, generate_basic_insights, dataframe_from_any
 from .sql_agent import SQLAgent
+from .analytics_handler import AnalyticsHandler
+try:
+    from .services.foundry_service import FoundryService  # type: ignore
+except Exception:
+    FoundryService = None  # type: ignore
 
 
 def _df_from_request(request) -> pd.DataFrame:
@@ -29,6 +35,28 @@ def _df_from_request(request) -> pd.DataFrame:
             return pd.read_csv(bio)
         elif name.endswith(".xlsx") or name.endswith(".xls"):
             return pd.read_excel(bio)
+        elif name.endswith(".json"):
+            # Support JSON dataset uploads: { data: [...] } or array of records
+            import json
+            bio.seek(0)
+            try:
+                payload = json.loads(bio.read().decode("utf-8"))
+            except Exception as je:
+                raise ValueError(f"Invalid JSON file: {je}")
+            if isinstance(payload, dict):
+                # Guardrail: user might upload a previous EDA response
+                if any(k in payload for k in ("charts", "insights", "tables")) and "data" not in payload:
+                    raise ValueError(
+                        "It looks like you uploaded an EDA results JSON. Please upload a dataset (CSV/XLSX) or a JSON file shaped as { data: [...] }."
+                    )
+                for key in ("data", "rows", "records", "items", "dataset"):
+                    if key in payload:
+                        from .insight_generator import dataframe_from_any as _dfa
+                        return _dfa(payload[key])
+            if isinstance(payload, list):
+                from .insight_generator import dataframe_from_any as _dfa
+                return _dfa(payload)
+            raise ValueError("JSON file did not contain a supported 'data' shape.")
         else:
             # try CSV as default
             try:
@@ -40,8 +68,16 @@ def _df_from_request(request) -> pd.DataFrame:
 
     # 2) JSON body { data: [...] }
     body = request.data or {}
-    if isinstance(body, dict) and "data" in body:
-        return dataframe_from_any(body["data"])
+    if isinstance(body, dict):
+        if "data" in body:
+            return dataframe_from_any(body["data"])
+        for key in ("rows", "records", "items", "dataset"):
+            if key in body:
+                return dataframe_from_any(body[key])
+        if any(k in body for k in ("charts", "insights", "tables")):
+            raise ValueError(
+                "Request body looks like an EDA response. Please send a dataset via file upload or JSON with a 'data' array of records."
+            )
 
     raise ValueError("No data provided. Upload a CSV/XLSX file or send JSON {data: ...}.")
 
@@ -59,58 +95,38 @@ class EDAProcessAPI(APIView):
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-    prompt = (request.data.get("prompt") or "").strip()
+        prompt = (request.data.get("prompt") or "").strip()
+        provider = (request.data.get("provider") or "").strip().lower() or None
+        model_deployment = (request.data.get("model_deployment") or request.data.get("deployment") or request.data.get("model") or "").strip() or None
+        mode = (request.data.get("mode") or "").strip().lower() or None
+        if not provider:
+            provider = (getattr(settings, "EDA_DEFAULT_PROVIDER", "") or "").strip().lower() or None
 
-        # Optional: apply SQL transformation if user provided a SELECT query in prompt
-        sql_info: Dict[str, Any] | None = None
-        if prompt and prompt.strip().upper().startswith("SELECT"):
-            agent = SQLAgent()
-            sql_res = agent.execute(df, prompt, assume_sql=True)
-            if sql_res.get("success"):
-                df = sql_res["data"]
-                sql_info = {
-                    "query": sql_res["query"],
-                    "summary": sql_res["transformation_summary"],
-                    "original_shape": sql_res["original_shape"],
-                    "result_shape": sql_res["result_shape"],
-                }
-
-        # Basic heuristics for charts
-        numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-        categorical_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
-        chart_specs = []
-        if categorical_cols and numeric_cols:
-            chart_specs.append({"type": "bar", "x": categorical_cols[0], "y": numeric_cols[0], "title": f"{numeric_cols[0]} by {categorical_cols[0]}", "reason": "Comparing values across categories"})
-        if len(numeric_cols) >= 2:
-            chart_specs.append({"type": "line", "x": df.columns[0], "y": numeric_cols[0], "title": f"{numeric_cols[0]} Trend", "reason": "Showing trend over sequence"})
-        if numeric_cols:
-            chart_specs.append({"type": "histogram", "x": numeric_cols[0], "title": f"Distribution of {numeric_cols[0]}", "reason": "Understanding distribution"})
-        chart_specs = chart_specs[:3]
-
-        cg = ChartGenerator()
-        charts = []
-        for spec in chart_specs:
+        # Use the richer analytics handler with integrated SQLAgent heuristics
+        # This mirrors the chatui flow: the handler decides if/when to apply SQL
+        # Optional Foundry wiring
+        foundry = None
+        if provider == "foundry" and FoundryService is not None:
             try:
-                fig = cg.create_chart(
-                    chart_type=spec.get("type", "bar"),
-                    data=df,
-                    title=spec.get("title"),
-                    x=spec.get("x"),
-                    y=spec.get("y"),
-                )
-                charts.append({
-                    "figure": fig,
-                    "type": spec.get("type"),
-                    "title": spec.get("title"),
-                    "reason": spec.get("reason", "")
-                })
+                foundry = FoundryService(model_deployment=model_deployment, mode=mode)
             except Exception:
-                continue
+                foundry = None  # fallback if misconfigured
+        sql_agent = SQLAgent(foundry=foundry)
+        handler = AnalyticsHandler(sql_agent=sql_agent, foundry=foundry)
+        results = handler.process_analytics_request(data=df, user_prompt=prompt, params={"provider": provider})
 
-        stats = calculate_statistics(df)
-        insights = generate_basic_insights(df, stats)
-        return Response({
-            "charts": {"success": True, "charts": charts, "count": len(charts)},
-            "insights": {"success": True, "data": {**insights, "statistics": stats}},
-            **({"sql_transformation": sql_info} if sql_info else {}),
-        })
+        payload: Dict[str, Any] = {
+            "charts": results.get("charts", {"success": False}),
+            "insights": results.get("insights", {"success": False}),
+            "tables": results.get("tables", {}),
+        }
+        # Surface chart source for easier debugging/rendering on the client
+        if "chart_source" in results:
+            payload["chart_source"] = results["chart_source"]
+        # If SQL ran inside the handler, it will include sql_transformation metadata
+        if "sql_transformation" in results:
+            payload["sql_transformation"] = results["sql_transformation"]
+        # Only surface SQL warnings when no special aggregation took over
+        if "sql_warning" in results and results.get("chart_source") != "aggregation":
+            payload["sql_warning"] = results["sql_warning"]
+        return Response(payload)

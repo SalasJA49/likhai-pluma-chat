@@ -5,7 +5,7 @@ from .views import (
     ChatStartAPI, ChatMessageAPI, ChatHistoryAPI, ChatStreamAPI,
     ChatUploadAPI, ChatUploadFoundryAPI,
     LocalsAPI,
-    ChatModelsAPI, ChatThreadsAPI, ChatRenameAPI, ResearchStreamAPI   # <-- add
+    ChatModelsAPI, ChatThreadsAPI, ChatRenameAPI, ResearchStreamAPI, ReasoningStreamAPI   # <-- add
 )
 from .analytics.eda import EDAProcessAPI
 
@@ -27,5 +27,6 @@ urlpatterns = [
     path("chat/stream/", ChatStreamAPI.as_view()),
     path("chat/models/", ChatModelsAPI.as_view()),  # <-- add
     path("research/stream/", ResearchStreamAPI.as_view()),
+    path("reasoning/stream/", ReasoningStreamAPI.as_view()),
     path("eda/process/", EDAProcessAPI.as_view()),
 ]
