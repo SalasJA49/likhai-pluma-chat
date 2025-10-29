@@ -1,0 +1,16 @@
+# dockerfile.chainlit  (repo root)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# install deps (reuse root requirements.txt if Chainlit needs them)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir chainlit
+
+# copy only what's needed by Chainlit
+COPY chatui/ /app/chatui/
+# if Chainlit imports these, keep them; otherwise remove
+
+ENV PYTHONUNBUFFERED=1
+

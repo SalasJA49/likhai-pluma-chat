@@ -1,0 +1,18 @@
+/* Big visible mask while testing; tweak later */
+#cl-topright-mask {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  width: 260px;          /* adjust to cover your cluster */
+  height: 48px;          /* adjust for your header height */
+  background: rgba(255, 255, 255, 0.98);   /* use dark bg in dark mode below */
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(0,0,0,.15);
+  z-index: 2147483647;   /* above everything */
+  pointer-events: auto;  /* block clicks under it; set to 'none' if you only want to visually hide */
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark){
+  #cl-topright-mask{ background: rgba(17,24,39,.98); }
+}

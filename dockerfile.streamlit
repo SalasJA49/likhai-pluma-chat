@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+# Streamlit config/secrets live here
+RUN mkdir -p /root/.streamlit
+# config.toml at repo root under .streamlit/
+COPY .streamlit/config.toml /root/.streamlit/config.toml
+# (optional) if you have secrets.toml or other files:
+# COPY .streamlit/secrets.toml /root/.streamlit/secrets.toml
+# or if you keep a whole folder of settings:
+# COPY settings/ /root/.streamlit/
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# app code
+COPY app.py .
+COPY app ./app
+COPY data ./data
+COPY img ./img
+COPY pages ./pages
+
+ENV PYTHONUNBUFFERED=1
+
+# optional (helps local tooling)
+EXPOSE 8501
+
+# default run (compose can override this)
+CMD ["streamlit", "run", "app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]

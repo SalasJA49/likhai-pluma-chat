@@ -161,5 +161,12 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+llm_config/
 .deployment
 .vscode/
+.files/
+.streamlit/secrets.toml
+.chainlit/secrets.toml
+.chainlit/translations/
+secrets.env
+fix_*.py
