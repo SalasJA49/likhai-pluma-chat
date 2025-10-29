@@ -47,13 +47,6 @@ async def get_llm_response(prompt: str) -> str:
     except Exception as e:
         logger.error(f"Error getting LLM response: {e}")
         # Return a fallback JSON structure
-<<<<<<< HEAD
-        return json.dumps({
-            "key_findings": "Statistical analysis completed.",
-            "insights": ["Data patterns have been analyzed."],
-            "recommendations": ["Review the statistical summary for details."]
-        })
-=======
         return _get_fallback_response()
 
 
@@ -72,7 +65,6 @@ def _get_fallback_response() -> str:
             "Investigate any outliers identified in the analysis."
         ]
     })
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
 
 
 class InsightGenerator:
@@ -128,36 +120,6 @@ class InsightGenerator:
         numeric_cols = data.select_dtypes(include=[np.number]).columns
         
         for col in numeric_cols:
-<<<<<<< HEAD
-            col_data = data[col].dropna()  # Remove NaN values
-            
-            if len(col_data) == 0:
-                continue
-                
-            mean_val = float(col_data.mean())
-            std_val = float(col_data.std())
-            min_val = float(col_data.min())
-            max_val = float(col_data.max())
-            q25 = float(col_data.quantile(0.25))
-            q75 = float(col_data.quantile(0.75))
-            iqr = q75 - q25
-            
-            stats[col] = {
-                "mean": mean_val,
-                "median": float(col_data.median()),
-                "std": std_val,
-                "min": min_val,
-                "max": max_val,
-                "q25": q25,
-                "q75": q75,
-                "iqr": iqr,  # Interquartile Range
-                "range": max_val - min_val,
-                "cv": (std_val / mean_val * 100) if mean_val != 0 else 0,  # Coefficient of Variation (%)
-                "skewness": float(col_data.skew()) if len(col_data) > 2 else 0,  # Distribution skewness
-                "count": int(col_data.count()),
-                "missing": int(data[col].isna().sum())
-            }
-=======
             try:
                 col_data = data[col].dropna()  # Remove NaN values
                 
@@ -208,7 +170,6 @@ class InsightGenerator:
             except Exception as e:
                 logger.warning(f"Error calculating statistics for column {col}: {e}")
                 continue
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
         
         return stats
     
@@ -296,12 +257,7 @@ class InsightGenerator:
             "patterns": patterns
         }
         
-<<<<<<< HEAD
-        prompt = f"""
-        You are a data analyst. Analyze the following data and provide insights.
-=======
         prompt = f"""You are a data analyst. Analyze the following data and provide insights.
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
 
 Data Summary:
 - Shape: {data_summary['shape'][0]} rows, {data_summary['shape'][1]} columns

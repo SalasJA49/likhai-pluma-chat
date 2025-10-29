@@ -1,9 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { startThread, getHistory, streamChat, uploadChatFiles, uploadChatFilesFoundry, streamResearch, edaProcess } from "../lib/api";
+import { startThread, getHistory, streamChat, uploadChatFiles, uploadChatFilesFoundry, streamResearch, streamReasoning, edaProcess } from "../lib/api";
+import DataTable from "../components/DataTable";
+import StatsTable from "../components/StatsTable";
+import PlotlyChart from "../components/PlotlyChart";
+import Markdown from "../components/Markdown";
 
 type Attachment = { id: number; filename: string; blob_url: string; content_type: string };
-type Msg = { role: "user" | "assistant"; content: string; attachments?: Attachment[]; pending?: boolean; completed?: boolean; figure?: any; title?: string };
+type Msg = {
+  role: "user" | "assistant";
+  content: string;
+  attachments?: Attachment[];
+  pending?: boolean;
+  completed?: boolean;
+  figure?: any;
+  title?: string;
+  dataTable?: { title?: string; columns: string[]; rows: Array<Record<string, any>> } | null;
+  stats?: Record<string, any> | null;
+};
 
 // If you want these from env later, you can fetch them from an endpoint.
 // For now, keep simple + explicit.
@@ -78,23 +92,45 @@ export default function Chat() {
   const safeJSON = (s: string) => { try { return JSON.parse(s); } catch { return null; } };
   const fmt = (s: string) => (s || "").trim();
 
-  // Lightweight Plotly renderer for figure JSON (from backend)
-  function PlotlyChart({ figure }: { figure: any }) {
-    const ref = useRef<HTMLDivElement | null>(null);
-    useEffect(() => {
-      const P: any = (window as any).Plotly;
-      if (ref.current && P && figure) {
-        try {
-          const data = figure.data || [];
-          const layout = figure.layout || {};
-          P.newPlot(ref.current, data, layout, { displayModeBar: false });
-        } catch (e) {
-          // no-op
-        }
+  // Smarter concatenation to avoid breaking acronyms like "BSP" while still inserting
+  // spaces between normal word boundaries when providers stream chunks without them.
+  const concatChunk = (prevText: string, chunk: string) => {
+    if (!chunk) return prevText;
+    if (!prevText) return chunk;
+
+    // If either side already has whitespace at the boundary, just join.
+    if (/\s$/.test(prevText) || /^\s/.test(chunk)) return prevText + chunk;
+
+    const prevEndsAlnum = /[A-Za-z0-9]$/.test(prevText);
+    const chunkStartsAlnum = /^[A-Za-z0-9]/.test(chunk);
+
+    if (prevEndsAlnum && chunkStartsAlnum) {
+      const lastToken = (prevText.match(/[A-Za-z0-9]+$/) || [""])[0];
+      const firstToken = (chunk.match(/^[A-Za-z0-9]+/) || [""])[0];
+      const isAllCapsOrDigits = (s: string) => /^[A-Z0-9]+$/.test(s);
+      const firstTokenStartsUpperThenLower = /^[A-Z][a-z]/.test(firstToken);
+
+      // If both sides look like an acronym/code (no lowercase), don't insert a space.
+      // Examples: "B"+"SP" -> BSP, "ISO"+"9001" -> ISO9001
+      if (isAllCapsOrDigits(lastToken) && isAllCapsOrDigits(firstToken)) {
+        return prevText + chunk;
       }
-    }, [figure]);
-    return <div ref={ref} className="w-full" />;
-  }
+
+      // If the incoming token looks like a Capitalized word (e.g., "Assistant"),
+      // insert a space so we get "AI Assistant", not "AIAssistant".
+      if (firstTokenStartsUpperThenLower) {
+        return prevText + " " + chunk;
+      }
+
+      // Default: add a space between alnum boundaries
+      return prevText + " " + chunk;
+    }
+
+    // Punctuation or other characters — join as-is
+    return prevText + chunk;
+  };
+
+  // Plotly rendering handled by shared component (react-plotly.js lazy loaded)
 
   useEffect(() => {
     (async () => {
@@ -170,7 +206,9 @@ export default function Chat() {
         return;
       }
 
-      if (attachments && attachments.length > 0) {
+      // If EDA is selected, skip the generic attachment pipeline (Foundry upload/extract)
+      // so the attached file is handled by the EDA flow below.
+      if (feature !== "eda" && attachments && attachments.length > 0) {
         try {
           // If using Foundry provider, directly upload files to Foundry and stream the run.
           const isFoundry = (deployment || "").toLowerCase().startsWith("foundry/");
@@ -198,14 +236,7 @@ export default function Chat() {
                     const clone = prev.slice();
                     const last = clone[clone.length - 1];
                     if (last?.role === "assistant") {
-                      const prevText = last.content || "";
-                      const prevEndsAlnum = /[A-Za-z0-9]$/.test(prevText);
-                      const chunkStartsAlnum = /^[A-Za-z0-9]/.test(chunk);
-                      if (prevEndsAlnum && chunkStartsAlnum) {
-                        last.content += " " + chunk;
-                      } else {
-                        last.content += chunk;
-                      }
+                      last.content = concatChunk(last.content || "", chunk);
                     }
                     return clone;
                   });
@@ -223,6 +254,8 @@ export default function Chat() {
                   }
                 } else if (type === "done") {
                   setIsStreaming(false);
+                  // Refresh sidebar and reload history so the final, canonical
+                  // assistant message from the backend is displayed.
                   try { window.dispatchEvent(new CustomEvent('threads:changed')); } catch(e){}
                   try {
                     if (threadId) {
@@ -305,11 +338,7 @@ export default function Chat() {
                 const clone = prev.slice();
                 const last = clone[clone.length - 1];
                 if (last?.role === "assistant") {
-                  const prevText = last.content || "";
-                  const prevEndsAlnum = /[A-Za-z0-9]$/.test(prevText);
-                  const chunkStartsAlnum = /^[A-Za-z0-9]/.test(chunk);
-                  if (prevEndsAlnum && chunkStartsAlnum) last.content += " " + chunk;
-                  else last.content += chunk;
+                  last.content = concatChunk(last.content || "", chunk);
                 }
                 return clone;
               });
@@ -421,6 +450,82 @@ export default function Chat() {
             });
           }
         );
+      } else if (feature === "reasoning") {
+        const useFoundry = (deployment || "").toLowerCase().startsWith("foundry/");
+        const sse = streamReasoning({
+          query: String(finalUserText || ""),
+          provider: useFoundry ? "foundry" : undefined,
+          model_deployment: useFoundry ? deployment : undefined,
+          mode: useFoundry ? mode : undefined,
+        });
+        sse.on(
+          async (ev) => {
+            // Log events for debugging (keeps the most recent 50)
+            try {
+              const parsed = JSON.parse(String(ev.data || ""));
+              setDebugEvents((prev) => [{ time: Date.now(), type: ev.type || "message", payload: parsed }, ...prev].slice(0, 50));
+            } catch (e) {
+              setDebugEvents((prev) => [{ time: Date.now(), type: ev.type || "message", payload: String(ev.data || "") }, ...prev].slice(0, 50));
+            }
+
+            const type = ev.type || "message";
+            if (type === "ready") {
+              setIsStreaming(true);
+              stepIdxRef.current = {};
+              replaceOrPushAssistant("Starting reasoning…", { pending: true, key: "r-status" });
+              return;
+            }
+            if (type === "thinking") {
+              const parsed = safeJSON(String(ev.data || ""));
+              const msg = fmt(parsed?.message || parsed?.detail || "Thinking…");
+              // Keep a single thinking bubble updated
+              replaceOrPushAssistant(`Step: Thinking\n\n${msg}`, { key: "r-thinking" });
+            } else if (type === "fallback") {
+              const parsed = safeJSON(String(ev.data || ""));
+              const msg = fmt(parsed?.message || "Using fallback.");
+              pushAssistantMsg(msg);
+            } else if (type === "finalize") {
+              const parsed = safeJSON(String(ev.data || ""));
+              const msg = fmt(parsed?.message || "Formatting reasoning output.");
+              pushAssistantMsg(msg);
+            } else if (type === "error") {
+              let msg = "⚠️ Sorry, something went wrong.";
+              try {
+                const parsed = JSON.parse(String(ev.data || "{}"));
+                if (parsed?.detail) msg = `⚠️ ${parsed.detail}`;
+              } catch {}
+              setMessages((prev) => {
+                const clone = prev.slice();
+                const last = clone[clone.length - 1];
+                if (last?.role === "assistant" && !last.content) last.content = msg;
+                return clone;
+              });
+            } else if (type === "done") {
+              setIsStreaming(false);
+              const p = safeJSON(String(ev.data || ""));
+              const mk = fmt(p?.markdown || "");
+              if (mk) {
+                setMessages((prev) => [...prev, { role: "assistant", content: mk }]);
+              }
+              if (stepIdxRef.current["r-status"] !== undefined) {
+                replaceStep("r-status", "Reasoning Complete", { completed: true });
+              }
+              try { window.dispatchEvent(new CustomEvent('threads:changed')); } catch(e) {}
+            }
+          },
+          (e) => {
+            console.error("Reasoning SSE failed:", e);
+            setIsStreaming(false);
+            setMessages((prev) => {
+              const clone = prev.slice();
+              const last = clone[clone.length - 1];
+              if (last?.role === "assistant" && !last.content) {
+                last.content = "⚠️ Sorry, something went wrong.";
+              }
+              return clone;
+            });
+          }
+        );
       } else if (feature === "eda") {
         // EDA flow: if a file is attached, send it; otherwise expect JSON in the prompt or simple demo data
         try {
@@ -429,6 +534,13 @@ export default function Chat() {
             const fd = new FormData();
             fd.append("prompt", finalUserText || "");
             fd.append("file", attachments[0]);
+            // If using Foundry, pass provider + mapping inputs so backend can resolve agent id
+            const isFoundry = (deployment || "").toLowerCase().startsWith("foundry/");
+            if (isFoundry) {
+              fd.append("provider", "foundry");
+              fd.append("model_deployment", deployment);
+              fd.append("mode", mode);
+            }
             payload = fd;
           } else {
             // try to parse JSON array/object from the prompt; if not, return a friendly hint
@@ -440,7 +552,8 @@ export default function Chat() {
               setMessages((prev) => [...prev, { role: "assistant", content: "📁 For EDA, attach a CSV/XLSX file or paste JSON data in the message." }]);
               return;
             }
-            payload = { data, prompt: "" };
+            const isFoundry = (deployment || "").toLowerCase().startsWith("foundry/");
+            payload = isFoundry ? { data, prompt: "", provider: "foundry", model_deployment: deployment, mode } : { data, prompt: "" };
           }
 
           // Add a status row with spinner
@@ -458,6 +571,31 @@ export default function Chat() {
                 { role: "assistant", content: `Chart ${i + 1}${c.title ? `: ${c.title}` : ""}${c.reason ? `\n\n_${c.reason}_` : ""}`, figure: c.figure, title: c.title },
               ]);
             });
+          }
+
+          // Render tables (Top-N + statistics) when present
+          const tables: any = (res as any)?.tables || {};
+          const topN = tables?.top_n;
+          if (topN && Array.isArray(topN.columns) && Array.isArray(topN.rows)) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                content: topN.title ? topN.title : "Top-N table",
+                dataTable: { title: topN.title, columns: topN.columns, rows: topN.rows },
+              },
+            ]);
+          }
+          const stats = tables?.statistics;
+          if (stats && typeof stats === "object") {
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                content: "Descriptive statistics",
+                stats,
+              },
+            ]);
           }
 
           // Show SQL transformation info if any
@@ -509,15 +647,7 @@ export default function Chat() {
                 const clone = prev.slice();
                 const last = clone[clone.length - 1];
                 if (last?.role === "assistant") {
-                  const prevText = last.content || "";
-                  // Only insert a space when both the previous char and the chunk start are alphanumeric
-                  const prevEndsAlnum = /[A-Za-z0-9]$/.test(prevText);
-                  const chunkStartsAlnum = /^[A-Za-z0-9]/.test(chunk);
-                  if (prevEndsAlnum && chunkStartsAlnum) {
-                    last.content += " " + chunk;
-                  } else {
-                    last.content += chunk;
-                  }
+                  last.content = concatChunk(last.content || "", chunk);
                 }
                 return clone;
               });
@@ -573,9 +703,8 @@ export default function Chat() {
               }
             } else if (type === "done") {
               setIsStreaming(false);
-              try {
-                window.dispatchEvent(new CustomEvent("threads:changed"));
-              } catch (e) {}
+              // Refresh sidebar and reload history for the final message
+              try { window.dispatchEvent(new CustomEvent("threads:changed")); } catch (e) {}
               try {
                 if (threadId) {
                   const hist = await getHistory(threadId);
@@ -681,7 +810,7 @@ export default function Chat() {
             >
               <option value="none">None</option>
               <option value="deep_research">Deep Research</option>
-              <option value="reasoning">Reasoning (coming)</option>
+              <option value="reasoning">Reasoning</option>
               <option value="eda">EDA</option>
             </select>
             <p className="text-xs text-slate-500 mt-2">Extra tools like Deep Research will stream results into the chat.</p>
@@ -721,11 +850,25 @@ export default function Chat() {
                   ) : m.completed ? (
                     <span className="mt-1 inline-flex items-center justify-center w-4 h-4 text-green-600" aria-label="done">✓</span>
                   ) : null}
-                  <div className="flex-1 min-w-0">
-                    <div>{m.content || (m.role === "assistant" ? "…" : "")}</div>
+                    <div className="flex-1 min-w-0">
+                    {m.content ? (
+                      <Markdown>{m.content}</Markdown>
+                    ) : (
+                      <div>{m.role === "assistant" ? "…" : ""}</div>
+                    )}
                     {m.figure ? (
                       <div className="mt-2 border border-slate-200 rounded">
                         <PlotlyChart figure={m.figure} />
+                      </div>
+                    ) : null}
+                    {m.dataTable ? (
+                      <div className="mt-3">
+                        <DataTable title={m.dataTable.title} columns={m.dataTable.columns} rows={m.dataTable.rows} />
+                      </div>
+                    ) : null}
+                    {m.stats ? (
+                      <div className="mt-3">
+                        <StatsTable statistics={m.stats} />
                       </div>
                     ) : null}
                   </div>

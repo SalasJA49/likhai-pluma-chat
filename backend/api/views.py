@@ -531,19 +531,11 @@ class ChatUploadFoundryAPI(APIView):
                         elif event_type == AgentStreamEvent.ERROR:
                             raise RuntimeError(str(event_data))
 
-                # merge tokens into assistant text
-                def _merge_tokens(ts: list[str]) -> str:
-                    if not ts:
-                        return ""
-                    out = ts[0]
-                    for t in ts[1:]:
-                        if out and out[-1].isalnum() and t and t[0].isalnum():
-                            out += " " + t
-                        else:
-                            out += t
-                    return out
-
-                assistant_text = _merge_tokens(tokens)
+                # Merge tokens exactly as streamed. Providers typically include
+                # leading spaces in their tokens; inserting extra spaces can
+                # corrupt acronyms (e.g., "BSP" -> "B SP") or split words
+                # (e.g., "summarizing" -> "summar izing").
+                assistant_text = "".join(tokens)
                 try:
                     ChatMessage.objects.create(thread=th, role="assistant", content=assistant_text)
                 except Exception:
@@ -687,20 +679,9 @@ class ChatStreamAPI(APIView):
                         # each token is a string chunk
                         tokens.append(token)
                         yield from sse_event("token", token)
-                    # persist final assistant message (merge tokens with spacing rules)
+                    # persist final assistant message (merge tokens exactly as streamed)
                     try:
-                        def _merge_tokens(ts: list[str]) -> str:
-                            if not ts:
-                                return ""
-                            out = ts[0]
-                            for t in ts[1:]:
-                                if out and out[-1].isalnum() and t and t[0].isalnum():
-                                    out += " " + t
-                                else:
-                                    out += t
-                            return out
-
-                        assistant_text = _merge_tokens(tokens)
+                        assistant_text = "".join(tokens)
                         ChatMessage.objects.create(thread=th, role="assistant", content=assistant_text)
                         # update thread title if it's still default/empty using assistant text as fallback
                         try:

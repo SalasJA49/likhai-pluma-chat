@@ -218,11 +218,7 @@ async def on_message(message: cl.Message):
         #    from utils.foundry import chat_agent
             
             msgs = append_message("user", context_prompt, message.elements)
-<<<<<<< HEAD
-         #   response = await chat_agent(context_prompt)
-=======
             response = await chat_agent(context_prompt)
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
             
             if response:
                 append_message("assistant", response)

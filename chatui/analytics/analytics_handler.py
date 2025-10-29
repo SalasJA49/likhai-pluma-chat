@@ -1,12 +1,7 @@
 """
 Analytics handler for BSP AI Assistant
-<<<<<<< HEAD
-Orchestrates chart generation and insight generation
-Now with LLM-powered chart recommendations and memory support
-=======
 Orchestrates SQL transformation, chart generation, and insight generation
 Now with integrated SQL agent for data filtering and aggregation
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
 """
 
 import chainlit as cl
@@ -14,34 +9,21 @@ import pandas as pd
 from typing import Dict, Any, Optional, List
 from analytics.chart_generator import ChartGenerator
 from analytics.insight_generator import InsightGenerator
-<<<<<<< HEAD
-from utils.utils import get_logger, append_message
-import json
-import time
-=======
 from analytics.sql_agent import SQLAgent
 from utils.utils import get_logger, append_message
 import json
 import time
 
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
 logger = get_logger()
 
 
 class AnalyticsHandler:
-<<<<<<< HEAD
-    """Main handler for analytics features"""
-=======
     """Main handler for analytics features with SQL agent integration"""
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
     
     def __init__(self):
         self.chart_gen = ChartGenerator()
         self.insight_gen = InsightGenerator()
-<<<<<<< HEAD
-=======
         self.sql_agent = SQLAgent()
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
     
     async def process_analytics_request(
         self,
@@ -50,11 +32,7 @@ class AnalyticsHandler:
         params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-<<<<<<< HEAD
-        Process analytics request with LLM-powered chart recommendations
-=======
         Process analytics request with SQL transformation, intelligent chart selection, and insights
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
         
         Args:
             data: Input data (DataFrame, dict, or file path)
@@ -73,11 +51,7 @@ class AnalyticsHandler:
             if df is None or df.empty:
                 return {"error": "No valid data provided"}
             
-<<<<<<< HEAD
-            # Store data info in session for memory
-=======
             # Store original data info in session
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
             cl.user_session.set("analytics_data", {
                 "shape": df.shape,
                 "columns": df.columns.tolist(),
@@ -86,20 +60,6 @@ class AnalyticsHandler:
             
             results = {}
             
-<<<<<<< HEAD
-            # Get LLM recommendations for charts
-            chart_specs = await self._get_chart_recommendations(df, user_prompt)
-            
-            # Generate recommended charts
-            if chart_specs:
-                charts_result = await self._generate_multiple_charts(df, chart_specs)
-                results["charts"] = charts_result
-            
-            # Generate insights
-            insights_result = await self._generate_insights(df, user_prompt, params)
-            results["insights"] = insights_result
-            
-=======
             # Step 1: Determine if SQL transformation is needed
             sql_needed = await self._check_sql_needed(user_prompt)
             
@@ -158,15 +118,12 @@ class AnalyticsHandler:
                 "columns": df.columns.tolist()
             })
             
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
             return results
             
         except Exception as e:
             logger.error(f"Error processing analytics request: {e}")
             return {"error": str(e)}
     
-<<<<<<< HEAD
-=======
     async def _check_sql_needed(self, user_prompt: str) -> bool:
         """
         Determine if SQL transformation is needed based on user prompt
@@ -366,7 +323,6 @@ class AnalyticsHandler:
         
         return spec if (spec.get("x") or spec.get("y") or spec.get("names")) else None
     
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
     async def _get_chart_recommendations(
         self,
         df: pd.DataFrame,
@@ -384,31 +340,13 @@ class AnalyticsHandler:
         """
         try:
             # Prepare data summary
-<<<<<<< HEAD
-=======
             numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
             categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
             
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
             data_summary = {
                 "columns": df.columns.tolist(),
                 "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
                 "shape": df.shape,
-<<<<<<< HEAD
-                "sample": df.head(3).to_dict(),
-                "numeric_columns": df.select_dtypes(include=['number']).columns.tolist(),
-                "categorical_columns": df.select_dtypes(include=['object', 'category']).columns.tolist()
-            }
-            
-            prompt = f"""User query: {query} 
-            You are a data visualization expert. Based on the data and user request, recommend appropriate charts.
-
-Data Summary:
-- Shape: {data_summary['shape'][0]} rows, {data_summary['shape'][1]} columns
-- Columns: {', '.join(data_summary['columns'])}
-- Numeric columns: {', '.join(data_summary['numeric_columns'])}
-- Categorical columns: {', '.join(data_summary['categorical_columns'])}
-=======
                 "sample": df.head(3).to_dict() if len(df) > 0 else {},
                 "numeric_columns": numeric_cols,
                 "categorical_columns": categorical_cols
@@ -421,7 +359,6 @@ Data Summary:
 - Columns: {', '.join(data_summary['columns'][:10])}{'...' if len(data_summary['columns']) > 10 else ''}
 - Numeric columns: {', '.join(numeric_cols[:5])}{'...' if len(numeric_cols) > 5 else ''}
 - Categorical columns: {', '.join(categorical_cols[:5])}{'...' if len(categorical_cols) > 5 else ''}
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
 
 User Request: "{user_prompt if user_prompt else 'Show me insights about this data'}"
 
@@ -446,17 +383,11 @@ Respond in JSON format:
     }}
   ]
 }}"""
-<<<<<<< HEAD
-            chat_settings = cl.user_session.get("chat_settings", {})
-            provider = chat_settings.get("model_provider", "litellm")
-            cl.user_session.set("start_time", time.time())
-=======
             
             chat_settings = cl.user_session.get("chat_settings", {})
             provider = chat_settings.get("model_provider", "litellm")
             cl.user_session.set("start_time", time.time())
             
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
             if provider == "foundry":
                 # Use Foundry agent for recommendations
                 from utils.foundry import chat_agent
@@ -470,14 +401,11 @@ Respond in JSON format:
                 # Restore original mode
                 cl.user_session.set("analytics_mode", original_mode)
                 
-<<<<<<< HEAD
-=======
                 # Validate response
                 if not response or response.strip() == "":
                     logger.warning("Empty response from chart recommendation")
                     return self._get_default_charts(df)
                 
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
                 # Parse response
                 try:
                     # Clean markdown code blocks
@@ -491,13 +419,6 @@ Respond in JSON format:
                     clean_response = clean_response.strip()
                     
                     chart_data = json.loads(clean_response)
-<<<<<<< HEAD
-                    return chart_data.get("charts", [])
-                except json.JSONDecodeError:
-                    logger.warning("Could not parse chart recommendations as JSON")
-                    # Fallback to default charts
-                    return self._get_default_charts(df)
-=======
                     charts = chart_data.get("charts", [])
                     
                     if not charts or len(charts) == 0:
@@ -511,7 +432,6 @@ Respond in JSON format:
                     return self._get_default_charts(df)
             else:
                 return self._get_default_charts(df)
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
                     
         except Exception as e:
             logger.error(f"Error getting chart recommendations: {e}")
@@ -664,8 +584,6 @@ Respond in JSON format:
     ):
         """Display analytics results in Chainlit UI"""
         try:
-<<<<<<< HEAD
-=======
             # Display SQL transformation info if present
             if "sql_transformation" in results:
                 sql_info = results["sql_transformation"]
@@ -695,7 +613,6 @@ Respond in JSON format:
                     author="SQL Agent"
                 ).send()
             
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
             # Display multiple charts
             if "charts" in results and results["charts"].get("success"):
                 charts_data = results["charts"].get("charts", [])
@@ -725,11 +642,7 @@ Respond in JSON format:
                             elements=[plotly_element]
                         ).send()
             
-<<<<<<< HEAD
-           # Display insights with enhanced statistics
-=======
             # Display insights with enhanced statistics
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
             if "insights" in results and results["insights"].get("success"):
                 insights_data = results["insights"]["data"]
                 
@@ -765,66 +678,6 @@ Respond in JSON format:
     
     def _format_statistics_table(self, statistics: Dict[str, Any]) -> str:
         """Format comprehensive statistics as a markdown table"""
-<<<<<<< HEAD
-        md = ["## 📊 Statistical Summary\n"]
-        
-        # Main statistics table
-        md.append("### Descriptive Statistics")
-        md.append("")
-        md.append("| Column | Count | Missing | Mean | Median | Std Dev | Min | Q1 | Q3 | Max |")
-        md.append("|--------|-------|---------|------|--------|---------|-----|----|----|-----|")
-        
-        for col, stats in statistics.items():
-            count = stats.get('count', 0)
-            missing = stats.get('missing', 0)
-            mean = stats.get('mean', 0)
-            median = stats.get('median', 0)
-            std = stats.get('std', 0)
-            min_val = stats.get('min', 0)
-            q1 = stats.get('q25', 0)
-            q3 = stats.get('q75', 0)
-            max_val = stats.get('max', 0)
-            
-            md.append(
-                f"| **{col}** | {count} | {missing} | {mean:.2f} | {median:.2f} | {std:.2f} | "
-                f"{min_val:.2f} | {q1:.2f} | {q3:.2f} | {max_val:.2f} |"
-            )
-        
-        md.append("")
-        
-        # Additional metrics table
-        md.append("### Distribution Metrics")
-        md.append("")
-        md.append("| Column | Range | IQR | CV (%) | Skewness |")
-        md.append("|--------|-------|-----|--------|----------|")
-        
-        for col, stats in statistics.items():
-            range_val = stats.get('range', 0)
-            iqr = stats.get('iqr', 0)
-            cv = stats.get('cv', 0)
-            skewness = stats.get('skewness', 0)
-            
-            # Interpret skewness
-            if abs(skewness) < 0.5:
-                skew_label = "Symmetric"
-            elif skewness > 0:
-                skew_label = "Right-skewed"
-            else:
-                skew_label = "Left-skewed"
-            
-            md.append(
-                f"| **{col}** | {range_val:.2f} | {iqr:.2f} | {cv:.2f} | "
-                f"{skewness:.2f} ({skew_label}) |"
-            )
-        
-        md.append("")
-        md.append("_**Legend:**_")
-        md.append("- _Q1/Q3: 25th/75th percentiles_")
-        md.append("- _IQR: Interquartile Range (Q3 - Q1)_")
-        md.append("- _CV: Coefficient of Variation (relative variability)_")
-        md.append("- _Skewness: Distribution asymmetry (0 = symmetric)_")
-        md.append("")
-=======
         if not statistics:
             return "## 📊 Statistical Summary\n\n_No numeric columns found in the data._\n"
         
@@ -891,7 +744,6 @@ Respond in JSON format:
         except Exception as e:
             logger.error(f"Error formatting statistics table: {e}", exc_info=True)
             md.append("\n_Error formatting statistics. Raw data available on request._\n")
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
         
         return "\n".join(md)
     
@@ -930,23 +782,16 @@ analytics_handler = AnalyticsHandler()
 
 async def handle_analytics_command(message_content: str, elements: List = None):
     """
-<<<<<<< HEAD
-    Handle analytics commands from chat - always generates both charts and insights
-=======
     Handle analytics commands from chat - processes SQL, generates charts and insights
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
     
     Command format:
     /analytics [your question or description]
     
-<<<<<<< HEAD
-=======
     Examples:
     - /analytics generate a line chart trend for the dataset on year 2025 only
     - /analytics show me the top 10 customers by sales
     - /analytics filter by category 'Electronics' and create a bar chart
     
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
     Args:
         message_content: The message content containing the command
         elements: Any file elements attached to the message
@@ -981,8 +826,6 @@ async def handle_analytics_command(message_content: str, elements: List = None):
             except:
                 pass
         
-<<<<<<< HEAD
-=======
         # Check if we have processed data from previous analytics command
         if not data:
             processed_data = cl.user_session.get("processed_data")
@@ -992,7 +835,6 @@ async def handle_analytics_command(message_content: str, elements: List = None):
                     content="📋 Using data from previous analytics request..."
                 ).send()
         
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
         if not data:
             await cl.Message(
                 content="📁 Please attach a CSV or Excel file, or provide data as JSON.\n\nExample: `/analytics Show me sales trends` (with file attached)"
@@ -1016,9 +858,6 @@ async def handle_analytics_command(message_content: str, elements: List = None):
         await analytics_handler.display_analytics(results)
         
         # Add results to message history for memory
-<<<<<<< HEAD
-        summary = f"Generated {results.get('charts', {}).get('count', 0)} charts and analytical insights for the data."
-=======
         summary_parts = []
         if "sql_transformation" in results:
             summary_parts.append("Applied SQL transformation")
@@ -1027,7 +866,6 @@ async def handle_analytics_command(message_content: str, elements: List = None):
         summary_parts.append("Generated analytical insights")
         
         summary = " | ".join(summary_parts)
->>>>>>> 2c6d00a (eda (sql, chart, insight) and deep research)
         append_message("assistant", summary, [])
         
         # Keep analytics mode enabled for follow-up questions
