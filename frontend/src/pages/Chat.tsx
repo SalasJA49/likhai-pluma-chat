@@ -42,7 +42,7 @@ export default function Chat() {
   const [feature, setFeature] = useState<string>("none");
   const scrollRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
-  const [isStreaming, setIsStreaming] = useState(false);
+  const [, setIsStreaming] = useState(false);
   const [debugEvents, setDebugEvents] = useState<Array<{time:number; type:string; payload:any}>>([]);
   const [showDebug, setShowDebug] = useState(false);
 
@@ -749,148 +749,118 @@ export default function Chat() {
   };
 
   return (
-    <div className="max-w-7xl mx-auto p-6 space-y-6">
-      {/* Title */}
-      <div className="flex items-center gap-3">
-        <span className="text-2xl">💬</span>
-        <h1 className="text-2xl font-semibold">Chatbot</h1>
+    <div className="max-w-7xl mx-auto p-6 space-y-4">
+      {/* Top toolbar: model (left) · Work/Web (center) */}
+      <div className="flex items-center justify-between">
+        {/* Model selector (left) */}
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-slate-500">Model</label>
+          <select
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            {MODEL_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {/* Work/Web toggle (center) */}
+        <div className="flex-1 flex items-center justify-center">
+          <div className="inline-flex rounded-full border border-slate-200 bg-white overflow-hidden">
+            <button
+              className={`px-4 py-1.5 text-sm ${mode === "work" ? "bg-blue-600 text-white" : "text-slate-700"}`}
+              onClick={() => setMode("work")}
+            >
+              Work
+            </button>
+            <button
+              className={`px-4 py-1.5 text-sm ${mode === "web" ? "bg-blue-600 text-white" : "text-slate-700"}`}
+              onClick={() => setMode("web")}
+            >
+              Web
+            </button>
+          </div>
+        </div>
+        {/* Right side spacer for symmetry */}
+        <div className="w-[140px]" />
       </div>
 
       {error && (
         <div className="rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</div>
       )}
 
-      {/* Controls (Foundry implied) */}
-      <div className="bg-white rounded-xl shadow-sm ring-1 ring-slate-200 p-5">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Model (Foundry only) */}
-          <div className="md:col-span-2">
-            <label className="block text-sm font-medium text-slate-700 mb-2">Model</label>
-            <select
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-            >
-              {MODEL_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-slate-500 mt-2">
-              Foundry routing for Work/Web is applied using your environment mapping.
-            </p>
-          </div>
-
-          {/* Mode */}
-          <div className="flex flex-col">
-            <label className="block text-sm font-medium text-slate-700 mb-2">Mode</label>
-            <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden w-max">
-              <button
-                className={`px-4 py-2 text-sm ${mode === "work" ? "bg-blue-600 text-white" : "bg-white text-slate-700"}`}
-                onClick={() => setMode("work")}
-              >
-                Work
-              </button>
-              <button
-                className={`px-4 py-2 text-sm ${mode === "web" ? "bg-blue-600 text-white" : "bg-white text-slate-700"}`}
-                onClick={() => setMode("web")}
-              >
-                Web
-              </button>
-            </div>
-          </div>
-          {/* Feature selector (Deep Research, Reasoning, EDA) */}
-          <div className="flex flex-col">
-            <label className="block text-sm font-medium text-slate-700 mb-2">Feature</label>
-            <select
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={feature}
-              onChange={(e) => setFeature(e.target.value)}
-            >
-              <option value="none">None</option>
-              <option value="deep_research">Deep Research</option>
-              <option value="reasoning">Reasoning</option>
-              <option value="eda">EDA</option>
-            </select>
-            <p className="text-xs text-slate-500 mt-2">Extra tools like Deep Research will stream results into the chat.</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Conversation */}
-      <div className="bg-white rounded-xl shadow-sm ring-1 ring-slate-200 p-5">
-        <h2 className="text-sm font-semibold text-slate-700 mb-3">Conversation</h2>
-
-        {isStreaming && (
-          <div className="text-xs text-slate-500 mb-2">Assistant is typing…</div>
-        )}
-
+      {/* Conversation panel */}
+      <div className="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 p-4">
         <div
           ref={scrollRef}
-          className="h-[54vh] overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-4"
+          className="h-[58vh] overflow-y-auto rounded-xl bg-slate-50 p-4"
         >
-          {messages.length === 0 && (
-            <p className="text-slate-500 text-sm">Ask me anything to get started…</p>
-          )}
-
-          <div className="space-y-3">
-            {messages.map((m, i) => (
-              <div
-                key={i}
-                className={`max-w-[85%] whitespace-pre-wrap px-3 py-2 rounded-lg ${
-                  m.role === "user"
-                    ? "bg-blue-600 text-white ml-auto"
-                    : "bg-white border border-slate-200 text-slate-800"
-                }`}
-              >
-                <div className="flex items-start gap-2">
-                  {m.pending ? (
-                    <span className="mt-1 inline-block w-4 h-4 rounded-full border-2 border-slate-300 border-t-blue-500 animate-spin" aria-label="loading" />
-                  ) : m.completed ? (
-                    <span className="mt-1 inline-flex items-center justify-center w-4 h-4 text-green-600" aria-label="done">✓</span>
-                  ) : null}
-                    <div className="flex-1 min-w-0">
-                    {m.content ? (
-                      <Markdown>{m.content}</Markdown>
-                    ) : (
-                      <div>{m.role === "assistant" ? "…" : ""}</div>
-                    )}
-                    {m.figure ? (
-                      <div className="mt-2 border border-slate-200 rounded">
-                        <PlotlyChart figure={m.figure} />
-                      </div>
-                    ) : null}
-                    {m.dataTable ? (
-                      <div className="mt-3">
-                        <DataTable title={m.dataTable.title} columns={m.dataTable.columns} rows={m.dataTable.rows} />
-                      </div>
-                    ) : null}
-                    {m.stats ? (
-                      <div className="mt-3">
-                        <StatsTable statistics={m.stats} />
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-                {m.attachments && m.attachments.length > 0 && (
-                  <div className="mt-2 space-y-1">
-                    {m.attachments.map((a) => (
-                      <div key={a.id} className="text-xs text-slate-500">
-                        {a.blob_url ? (
-                          <a href={a.blob_url} target="_blank" rel="noreferrer" className="underline">
-                            {a.filename}
-                          </a>
-                        ) : (
-                          <span>{a.filename}</span>
+          {messages.length === 0 ? (
+            <div className="h-full w-full flex flex-col items-center justify-center select-none">
+              <div className="w-40 h-40 rounded-full bg-gradient-to-br from-blue-100 to-blue-200 flex items-center justify-center ring-1 ring-slate-200">
+                <span className="text-4xl">🦅</span>
+              </div>
+              <div className="mt-4 text-slate-500 text-sm">Type your message to start</div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {messages.map((m, i) => (
+                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className={`max-w-[85%] whitespace-pre-wrap px-3 py-2 rounded-2xl shadow-sm ${
+                      m.role === "user"
+                        ? "bg-blue-600 text-white rounded-br-md"
+                        : "bg-white border border-slate-200 text-slate-800 rounded-bl-md"
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      {m.pending ? (
+                        <span className="mt-1 inline-block w-4 h-4 rounded-full border-2 border-slate-300 border-t-blue-500 animate-spin" aria-label="loading" />
+                      ) : m.completed ? (
+                        <span className="mt-1 inline-flex items-center justify-center w-4 h-4 text-green-600" aria-label="done">✓</span>
+                      ) : null}
+                      <div className="flex-1 min-w-0">
+                        {m.content ? <Markdown>{m.content}</Markdown> : <div>{m.role === "assistant" ? "…" : ""}</div>}
+                        {m.figure ? (
+                          <div className="mt-2 border border-slate-200 rounded">
+                            <PlotlyChart figure={m.figure} />
+                          </div>
+                        ) : null}
+                        {m.dataTable ? (
+                          <div className="mt-3">
+                            <DataTable title={m.dataTable.title} columns={m.dataTable.columns} rows={m.dataTable.rows} />
+                          </div>
+                        ) : null}
+                        {m.stats ? (
+                          <div className="mt-3">
+                            <StatsTable statistics={m.stats} />
+                          </div>
+                        ) : null}
+                        {m.attachments && m.attachments.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {m.attachments.map((a) => (
+                              <div key={a.id} className="text-xs text-slate-500">
+                                {a.blob_url ? (
+                                  <a href={a.blob_url} target="_blank" rel="noreferrer" className="underline">
+                                    {a.filename}
+                                  </a>
+                                ) : (
+                                  <span>{a.filename}</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
                         )}
                       </div>
-                    ))}
+                    </div>
                   </div>
-                )}
-              </div>
-            ))}
-          </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Composer */}
@@ -918,35 +888,56 @@ export default function Chat() {
             )}
           </div>
         )}
-        <div className="mt-4 flex items-end gap-3">
-          <textarea
-            className="flex-1 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 p-3 h-[64px] resize-y"
-            placeholder="Type a message…"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-          />
-          <button
-            onClick={send}
-            disabled={!threadId || (!input.trim() && attachments.length === 0) || sending}
-            className="h-[44px] min-w-[80px] rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {sending ? "Sending…" : "Send"}
-          </button>
-        </div>
-        {/* Attachment area below composer */}
-        <div className="mt-2 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <input ref={fileRef} type="file" className="hidden" onChange={(e)=>onSelectFiles(e.target.files)} multiple />
-            <button onClick={()=>fileRef.current?.click()} className="text-sm text-slate-600 hover:underline">Attach files</button>
-            <div className="text-xs text-slate-400">{attachments.length>0 ? attachments.map(a=>a.name).join(', ') : ''}</div>
+        <div className="mt-4">
+          <div className="flex items-end gap-2">
+            <div className="flex-1 bg-white rounded-2xl ring-1 ring-slate-200 px-3 py-2 flex items-end">
+              <button
+                onClick={()=>fileRef.current?.click()}
+                className="mr-2 p-2 rounded-full hover:bg-slate-100 text-slate-600"
+                title="Attach"
+              >📎</button>
+              <textarea
+                className="flex-1 outline-none p-2 min-h-[54px] max-h-[160px] resize-y text-sm"
+                placeholder="Type your message here…"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    send();
+                  }
+                }}
+              />
+              <button
+                onClick={send}
+                disabled={!threadId || (!input.trim() && attachments.length === 0) || sending}
+                className="ml-2 h-10 w-10 rounded-full bg-blue-600 text-white grid place-items-center disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Send"
+                aria-label="Send"
+              >➤</button>
+            </div>
           </div>
-          <div className="text-xs text-slate-400">You can attach .pdf, .docx, images</div>
+          <div className="mt-2 flex items-center justify-between">
+            {/* Features dropdown under the input */}
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-slate-500">Feature</label>
+              <select
+                className="rounded-lg border border-slate-200 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={feature}
+                onChange={(e) => setFeature(e.target.value)}
+              >
+                <option value="none">None</option>
+                <option value="deep_research">Deep Research</option>
+                <option value="reasoning">Reasoning</option>
+                <option value="eda">EDA</option>
+              </select>
+            </div>
+            {/* Attachment preview text */}
+            <div className="text-xs text-slate-400 truncate max-w-[60%]">
+              {attachments.length>0 ? attachments.map(a=>a.name).join(', ') : 'You can attach .pdf, .docx, images'}
+            </div>
+          </div>
+          <input ref={fileRef} type="file" className="hidden" onChange={(e)=>onSelectFiles(e.target.files)} multiple />
         </div>
       </div>
     </div>
